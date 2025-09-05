@@ -131,47 +131,68 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         // 6) Build ValidationSupport chain
         IValidationSupport chain = buildValidationChain(ctx, allPkgs);
 
-        // 7) Iterate StructureDefinitions and generate snapshots as needed
-        int generated = 0, total = 0, written = 0;
+        // 7) For each package, copy entire package content into subfolder '<id>#<version>'
+        //    and snapshot StructureDefinitions only
+        int generated = 0, total = 0, sdWritten = 0, filesCopied = 0;
         for (NpmPackage p : allPkgs) {
+            String pkgFolderName = p.name() + "#" + p.version();
+            Path pkgOutDir = outDir.resolve(pkgFolderName);
+            // 7a) Copy all folders/files
+            var folders = p.getFolders();
+            for (Map.Entry<String, org.hl7.fhir.utilities.npm.NpmPackage.NpmPackageFolder> e : folders.entrySet()) {
+                String folderName = e.getKey();
+                var folder = e.getValue();
+                Path folderOut = pkgOutDir.resolve(folderName);
+                Files.createDirectories(folderOut);
+                for (String fname : folder.listFiles()) {
+                    Path target = folderOut.resolve(fname);
+                    if (!overwrite && Files.exists(target)) {
+                        continue;
+                    }
+                    try (InputStream is = p.load(folderName, fname)) {
+                        if (is == null) continue;
+                        byte[] bytes = is.readAllBytes();
+                        Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                        filesCopied++;
+                    }
+                }
+            }
+
+            // 7b) Snapshot StructureDefinitions and overwrite copied files when a new snapshot was generated
             for (String resName : p.listResources("StructureDefinition")) {
                 total++;
                 try (InputStream is = p.load("package", resName)) {
+                    if (is == null) continue;
                     String json = new String(is.readAllBytes());
 
                     boolean hasSnapshot = SNAPSHOT_FIELD.matcher(json).find();
-                    if (forceSnapshot || !hasSnapshot) {
+                    boolean didGenerate = forceSnapshot || !hasSnapshot;
+                    if (didGenerate) {
                         SnapshotGeneratingValidationSupport snap = new SnapshotGeneratingValidationSupport(ctx);
                         ValidationSupportContext vsc = new ValidationSupportContext(chain);
                         IBaseResource parsed = ctx.newJsonParser().parseResource(json);
-                        IBaseResource withSnap = snap.generateSnapshot(
-                                vsc,
-                                parsed,
-                                getUrlFromJson(json),
-                                null, // web URL not provided
-                                getNameFromJson(json)
-                        );
+                        IBaseResource withSnap = snap.generateSnapshot(vsc, parsed, getUrlFromJson(json), null, getNameFromJson(json));
                         json = pretty
                                 ? ctx.newJsonParser().setPrettyPrint(true).encodeResourceToString(withSnap)
                                 : ctx.newJsonParser().encodeResourceToString(withSnap);
                         generated++;
                     }
 
-                    String fileName = safeNameFromJson(json);
-                    Path target = outDir.resolve(fileName + ".json");
-                    if (!overwrite && Files.exists(target)) {
+                    Path target = pkgOutDir.resolve("package").resolve(resName);
+                    // Write if we generated a new snapshot, regardless of existing file; otherwise honor overwrite flag
+                    if (!didGenerate && !overwrite && Files.exists(target)) {
                         continue;
                     }
                     Files.createDirectories(target.getParent());
                     Files.writeString(target, json, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-                    written++;
+                    sdWritten++;
                 }
             }
         }
 
         System.out.printf(Locale.ROOT,
-                "Done: %d StructureDefinitions found, %d snapshots generated, %d files written. Output: %s%n",
-                total, generated, written, outDir.toAbsolutePath());
+                "Done: %d StructureDefinitions found, %d snapshots generated, %d SD files written, %d files copied. Output: %s%n",
+                total, generated, sdWritten, filesCopied, outDir.toAbsolutePath());
 
         return 0;
     }
