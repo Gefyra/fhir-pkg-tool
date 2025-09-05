@@ -23,11 +23,13 @@ jobs:
       - name: Build with Maven (skip tests)
         run: mvn -B -DskipTests package
 
+      - name: List target contents
+        run: ls -la target || true
+
       - name: Upload shaded jar
         uses: actions/upload-artifact@v4
         with:
           name: fhir-pkg-tool-jar-with-dependencies
           path: |
-            target/fhir-pkg-tool-jar-with-dependencies.jar
+            target/*-jar-with-dependencies.jar
           if-no-files-found: error
-
