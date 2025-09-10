@@ -65,6 +65,9 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     @Option(names = {"--force-snapshot"}, description = "Always (re)generate snapshots, even if present")
     boolean forceSnapshot = false;
 
+    @Option(names = {"--profiles-dir"}, description = "Directory with local StructureDefinition JSONs (processed recursively)")
+    Path profilesDir;
+
     public static void main(String[] args) {
         int exit = new CommandLine(new FhirPackageSnapshotTool()).execute(args);
         System.exit(exit);
@@ -131,68 +134,133 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         // 6) Build ValidationSupport chain
         IValidationSupport chain = buildValidationChain(ctx, allPkgs);
 
-        // 7) For each package, copy entire package content into subfolder '<id>#<version>'
-        //    and snapshot StructureDefinitions only
+        // 7) If no --profiles-dir: copy packages and snapshot their StructureDefinitions
+        //    If --profiles-dir is present: skip package output entirely (local-only output)
         int generated = 0, total = 0, sdWritten = 0, filesCopied = 0;
-        for (NpmPackage p : allPkgs) {
-            String pkgFolderName = p.name() + "#" + p.version();
-            Path pkgOutDir = outDir.resolve(pkgFolderName);
-            // 7a) Copy all folders/files
-            var folders = p.getFolders();
-            for (Map.Entry<String, org.hl7.fhir.utilities.npm.NpmPackage.NpmPackageFolder> e : folders.entrySet()) {
-                String folderName = e.getKey();
-                var folder = e.getValue();
-                Path folderOut = pkgOutDir.resolve(folderName);
-                Files.createDirectories(folderOut);
-                for (String fname : folder.listFiles()) {
-                    Path target = folderOut.resolve(fname);
-                    if (!overwrite && Files.exists(target)) {
-                        continue;
+        if (profilesDir == null) {
+            for (NpmPackage p : allPkgs) {
+                String pkgFolderName = p.name() + "#" + p.version();
+                Path pkgOutDir = outDir.resolve(pkgFolderName);
+                // 7a) Copy all folders/files
+                var folders = p.getFolders();
+                for (Map.Entry<String, org.hl7.fhir.utilities.npm.NpmPackage.NpmPackageFolder> e : folders.entrySet()) {
+                    String folderName = e.getKey();
+                    var folder = e.getValue();
+                    Path folderOut = pkgOutDir.resolve(folderName);
+                    Files.createDirectories(folderOut);
+                    for (String fname : folder.listFiles()) {
+                        Path target = folderOut.resolve(fname);
+                        if (!overwrite && Files.exists(target)) {
+                            continue;
+                        }
+                        try (InputStream is = p.load(folderName, fname)) {
+                            if (is == null) continue;
+                            byte[] bytes = is.readAllBytes();
+                            Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                            filesCopied++;
+                        }
                     }
-                    try (InputStream is = p.load(folderName, fname)) {
+                }
+
+                // 7b) Snapshot StructureDefinitions and overwrite copied files when a new snapshot was generated
+                for (String resName : p.listResources("StructureDefinition")) {
+                    total++;
+                    try (InputStream is = p.load("package", resName)) {
                         if (is == null) continue;
-                        byte[] bytes = is.readAllBytes();
-                        Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-                        filesCopied++;
+                        String json = new String(is.readAllBytes());
+
+                        boolean hasSnapshot = SNAPSHOT_FIELD.matcher(json).find();
+                        boolean didGenerate = forceSnapshot || !hasSnapshot;
+                        if (didGenerate) {
+                            SnapshotGeneratingValidationSupport snap = new SnapshotGeneratingValidationSupport(ctx);
+                            ValidationSupportContext vsc = new ValidationSupportContext(chain);
+                            IBaseResource parsed = ctx.newJsonParser().parseResource(json);
+                            IBaseResource withSnap = snap.generateSnapshot(vsc, parsed, getUrlFromJson(json), null, getNameFromJson(json));
+                            json = pretty
+                                    ? ctx.newJsonParser().setPrettyPrint(true).encodeResourceToString(withSnap)
+                                    : ctx.newJsonParser().encodeResourceToString(withSnap);
+                            generated++;
+                        }
+
+                        Path target = pkgOutDir.resolve("package").resolve(resName);
+                        // Write if we generated a new snapshot, regardless of existing file; otherwise honor overwrite flag
+                        if (!didGenerate && !overwrite && Files.exists(target)) {
+                            continue;
+                        }
+                        Files.createDirectories(target.getParent());
+                        Files.writeString(target, json, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                        sdWritten++;
                     }
                 }
             }
+        }
 
-            // 7b) Snapshot StructureDefinitions and overwrite copied files when a new snapshot was generated
-            for (String resName : p.listResources("StructureDefinition")) {
-                total++;
-                try (InputStream is = p.load("package", resName)) {
-                    if (is == null) continue;
-                    String json = new String(is.readAllBytes());
+        // 8) Optionally: process local profiles from --profiles-dir
+        int localTotal = 0, localGenerated = 0, localWritten = 0;
+        if (profilesDir != null) {
+            if (!Files.exists(profilesDir) || !Files.isDirectory(profilesDir)) {
+                System.err.printf(Locale.ROOT, "Profiles directory not found or not a directory: %s%n", profilesDir);
+            } else {
+                Path localOutBase = outDir.resolve("local");
+                SnapshotGeneratingValidationSupport snap = new SnapshotGeneratingValidationSupport(ctx);
+                ValidationSupportContext vsc = new ValidationSupportContext(chain);
 
-                    boolean hasSnapshot = SNAPSHOT_FIELD.matcher(json).find();
-                    boolean didGenerate = forceSnapshot || !hasSnapshot;
-                    if (didGenerate) {
-                        SnapshotGeneratingValidationSupport snap = new SnapshotGeneratingValidationSupport(ctx);
-                        ValidationSupportContext vsc = new ValidationSupportContext(chain);
-                        IBaseResource parsed = ctx.newJsonParser().parseResource(json);
-                        IBaseResource withSnap = snap.generateSnapshot(vsc, parsed, getUrlFromJson(json), null, getNameFromJson(json));
-                        json = pretty
-                                ? ctx.newJsonParser().setPrettyPrint(true).encodeResourceToString(withSnap)
-                                : ctx.newJsonParser().encodeResourceToString(withSnap);
-                        generated++;
+                try (var stream = Files.walk(profilesDir)) {
+                    for (Path f : (Iterable<Path>) stream::iterator) {
+                        if (Files.isDirectory(f)) continue;
+                        String fn = f.getFileName().toString().toLowerCase(Locale.ROOT);
+                        if (!fn.endsWith(".json")) continue;
+
+                        String json;
+                        try {
+                            json = Files.readString(f);
+                        } catch (Exception e) {
+                            System.err.printf(Locale.ROOT, "Skip unreadable file: %s (%s)%n", f, e.getMessage());
+                            continue;
+                        }
+
+                        // Only handle StructureDefinition resources
+                        String rt = extractJsonString(json, "resourceType");
+                        if (rt == null || !"StructureDefinition".equals(rt)) continue;
+                        localTotal++;
+
+                        boolean hasSnapshot = SNAPSHOT_FIELD.matcher(json).find();
+                        boolean didGenerate = forceSnapshot || !hasSnapshot;
+                        if (didGenerate) {
+                            try {
+                                IBaseResource parsed = ctx.newJsonParser().parseResource(json);
+                                IBaseResource withSnap = snap.generateSnapshot(vsc, parsed, getUrlFromJson(json), null, getNameFromJson(json));
+                                json = pretty
+                                        ? ctx.newJsonParser().setPrettyPrint(true).encodeResourceToString(withSnap)
+                                        : ctx.newJsonParser().encodeResourceToString(withSnap);
+                                localGenerated++;
+                            } catch (Exception e) {
+                                System.err.printf(Locale.ROOT, "Snapshot generation failed for %s: %s%n", f, e.getMessage());
+                                continue;
+                            }
+                        }
+
+                        // mirror relative path under out/local
+                        Path rel = profilesDir.relativize(f);
+                        Path target = localOutBase.resolve(rel);
+                        try {
+                            if (!didGenerate && !overwrite && Files.exists(target)) {
+                                continue;
+                            }
+                            Files.createDirectories(target.getParent());
+                            Files.writeString(target, json, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                            localWritten++;
+                        } catch (Exception e) {
+                            System.err.printf(Locale.ROOT, "Write failed for %s: %s%n", target, e.getMessage());
+                        }
                     }
-
-                    Path target = pkgOutDir.resolve("package").resolve(resName);
-                    // Write if we generated a new snapshot, regardless of existing file; otherwise honor overwrite flag
-                    if (!didGenerate && !overwrite && Files.exists(target)) {
-                        continue;
-                    }
-                    Files.createDirectories(target.getParent());
-                    Files.writeString(target, json, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-                    sdWritten++;
                 }
             }
         }
 
         System.out.printf(Locale.ROOT,
-                "Done: %d StructureDefinitions found, %d snapshots generated, %d SD files written, %d files copied. Output: %s%n",
-                total, generated, sdWritten, filesCopied, outDir.toAbsolutePath());
+                "Done: %d SDs found, %d snapshots generated, %d SD files written, %d files copied. Local: %d SDs, %d generated, %d written. Output: %s%n",
+                total, generated, sdWritten, filesCopied, localTotal, localGenerated, localWritten, outDir.toAbsolutePath());
 
         return 0;
     }

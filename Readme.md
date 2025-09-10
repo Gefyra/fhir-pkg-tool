@@ -8,6 +8,7 @@ A small CLI tool that downloads FHIR NPM packages from the registry, resolves re
 - Automatic FHIR context detection (R4, R4B, R5; DSTU3 fallback)
 - Snapshot generation (optional `--force-snapshot`)
 - Output layout: one subfolder per package in `--out`, named `<packageId>#<version>` (e.g. `hl7.fhir.us.core#6.1.0`). The complete package is copied there; only `StructureDefinition` JSON files are parsed and (re)written with snapshots.
+- Local profiles folder via `--profiles-dir` (recursively loads JSON `StructureDefinition`s and writes snapshots under `--out/local`)
 
 ## Build
 ```bash
@@ -49,6 +50,19 @@ java -jar target/fhir-pkg-tool-jar-with-dependencies.jar   --sushi-deps-file ./s
 java -jar target/fhir-pkg-tool-jar-with-dependencies.jar   -p hl7.fhir.r5.core@5.0.0 -p hl7.fhir.uv.tools@current   --skip-deps
 ```
 
+**Local profiles from a folder (local-only output):**
+```bash
+java -jar target/fhir-pkg-tool-jar-with-dependencies.jar \
+  -p hl7.fhir.r4.core@4.0.1 \
+  --profiles-dir ./profiles \
+  -o ./out
+```
+Notes:
+- The folder is scanned recursively for `*.json` files with `resourceType: StructureDefinition`.
+- Only local outputs are produced; packages are NOT copied or snapshotted when `--profiles-dir` is used.
+- Outputs mirror the input structure under `./out/local/...`.
+- Snapshot generation respects `--force-snapshot`, `--overwrite`, and `--pretty`.
+
 ## CLI Options
 
 - `-p, --package`: One or more package coordinates (`name@version`). Comma-separated allowed, can be repeated.
@@ -61,6 +75,7 @@ java -jar target/fhir-pkg-tool-jar-with-dependencies.jar   -p hl7.fhir.r5.core@5
 - `--overwrite`: Overwrite existing files in the output (both copied and snapshotted).
 - `--pretty`: Pretty-print JSON output for rewritten StructureDefinitions (default: true).
 - `--force-snapshot`: Always regenerate snapshots even if a snapshot exists.
+- `--profiles-dir`: Directory containing local `StructureDefinition` JSON files (processed recursively, written under `--out/local`). When set, package contents are not written.
 
 ## Notes
 - Avoid mixing FHIR versions in one run; use one version per run (context comes from the first package).
@@ -72,3 +87,4 @@ java -jar target/fhir-pkg-tool-jar-with-dependencies.jar   -p hl7.fhir.r5.core@5
 - For each loaded package, a directory `--out/<packageId>#<version>/` is created and the contents of the package are copied into it (`package/`, `example/`, `other/`, etc.).
 - Only `StructureDefinition` JSON files are parsed and, if needed, replaced by a version containing a `snapshot` element in `package/`.
 - Ohne `--overwrite` werden bestehende Dateien grundsätzlich nicht überschrieben – Ausnahme: StructureDefinitions, für die ein Snapshot neu generiert wurde (weil keiner vorhanden war oder `--force-snapshot` gesetzt ist), werden immer aktualisiert. Mit `--overwrite` werden außerdem unveränderte Dateien überschrieben.
+- Für `--profiles-dir` werden nur lokale Dateien nach `--out/local` geschrieben (Packages werden nicht kopiert/gesnapshottet). Die Original-Verzeichnisstruktur wird gespiegelt. Eine Basis-Package (z. B. `hl7.fhir.r4.core`) sollte via `-p` angegeben werden, damit Basen/Bindings aufgelöst werden können.
