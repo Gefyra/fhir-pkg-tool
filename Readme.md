@@ -27,17 +27,17 @@ mvn -q -DskipTests package
 
 **Multiple packages:**
 ```bash
-java -jar target/fhir-pkg-tool-jar-with-dependencies.jar   -p hl7.fhir.r4.core@4.0.1   -p hl7.fhir.us.core@6.1.0,hl7.fhir.au.core@5.0.0   -o ./out/mix
+java -jar target/fhir-pkg-tool.jar   -p hl7.fhir.r4.core@4.0.1   -p hl7.fhir.us.core@6.1.0,hl7.fhir.au.core@5.0.0   -o ./out/mix
 ```
 
 **Dependencies from Sushi file:**
 ```bash
-java -jar target/fhir-pkg-tool-jar-with-dependencies.jar   --sushi-deps-file ./sushi-config.yaml   -o ./out/from-sushi
+java -jar target/fhir-pkg-tool.jar   --sushi-deps-file ./sushi-config.yaml   -o ./out/from-sushi
 ```
 
 **Dependencies from inline YAML:**
 ```bash
-java -jar target/fhir-pkg-tool-jar-with-dependencies.jar   --sushi-deps-str "$(cat <<'YAML' 
+java -jar target/fhir-pkg-tool.jar   --sushi-deps-str "$(cat <<'YAML' 
 dependencies:
   hl7.fhir.us.core: 3.1.0
   hl7.fhir.us.mcode:
@@ -50,17 +50,17 @@ YAML
 
 **Always rebuild snapshots:**
 ```bash
-java -jar target/fhir-pkg-tool-jar-with-dependencies.jar   --sushi-deps-file ./sushi-config.yaml   --force-snapshot
+java -jar target/fhir-pkg-tool.jar   --sushi-deps-file ./sushi-config.yaml   --force-snapshot
 ```
 
 **Only root packages (skip dependencies):**
 ```bash
-java -jar target/fhir-pkg-tool-jar-with-dependencies.jar   -p hl7.fhir.r5.core@5.0.0 -p hl7.fhir.uv.tools@current   --skip-deps
+java -jar target/fhir-pkg-tool.jar   -p hl7.fhir.r5.core@5.0.0 -p hl7.fhir.uv.tools@current   --skip-deps
 ```
 
 **Local profiles from a folder (local-only output):**
 ```bash
-java -jar target/fhir-pkg-tool-jar-with-dependencies.jar \
+java -jar target/fhir-pkg-tool.jar \
   -p hl7.fhir.r4.core@4.0.1 \
   --profiles-dir ./profiles \
   -o ./out

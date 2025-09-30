@@ -29,9 +29,9 @@ jobs:
       - name: Capture shaded jar path
         id: jar
         run: |
-          JAR_PATH=$(ls target/*-jar-with-dependencies.jar | head -n 1)
-          if [ -z "$JAR_PATH" ]; then
-            echo "No shaded jar found" >&2
+          JAR_PATH="target/fhir-pkg-tool.jar"
+          if [ ! -f "$JAR_PATH" ]; then
+            echo "No shaded jar found at $JAR_PATH" >&2
             exit 1
           fi
           echo "jar-path=$JAR_PATH" >> "$GITHUB_OUTPUT"
