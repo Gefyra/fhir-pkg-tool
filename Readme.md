@@ -1,7 +1,7 @@
 # FHIR Package Snapshot Tool (Java 21, HAPI 8)
 
 [![Build](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/ci.yml)
-[![Release Workflow](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/release.yml)
+[![Release Workflow](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/release.yml/badge.svg)](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/release.yml)
 [![Latest Release](https://img.shields.io/github/v/release/Gefyra/fhir-pkg-tool?logo=github&label=Latest%20Release)](https://github.com/Gefyra/fhir-pkg-tool/releases/latest)
 ![Dependabot](https://img.shields.io/badge/dependabot-enabled-blue?logo=dependabot)
 [![License](https://img.shields.io/github/license/Gefyra/fhir-pkg-tool?logo=opensource&label=License)](LICENSE)
