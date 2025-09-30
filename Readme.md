@@ -62,13 +62,14 @@ Notes:
 - Only local outputs are produced; packages are NOT copied or snapshotted when `--profiles-dir` is used.
 - Outputs mirror the input structure under `./out/local/...`.
 - Snapshot generation respects `--force-snapshot`, `--overwrite`, and `--pretty`.
+- Bei Nutzung von `--sushi-deps-file` wird die dort hinterlegte `fhirVersion` für den Kontext herangezogen; ohne Sushi-Datei übernimmt das erste geladene Paket die Wahl bzw. fällt das Tool auf R5 zurück.
 
 ## CLI Options
 
 - `-p, --package`: One or more package coordinates (`name@version`). Comma-separated allowed, can be repeated.
 - `--sushi-deps-file`: Path to a `sushi-config.yaml` (dependencies are read).
 - `--sushi-deps-str`: Inline YAML block containing `dependencies:`.
-- `-o, --out`: Output directory (default: `./out`). Each package is copied to a subfolder `<id>#<version>`.
+- `-o, --out`: Output directory (default: `%APPDATA%\fhir\packages` on Windows, `~/.fhir/packages` on Linux/macOS). Each package is copied to a subfolder `<id>#<version>`.
 - `--cache`: Local NPM package cache directory (default: `~/.fhir/packages`).
 - `--registry`: Package registry URL (default: `https://packages.fhir.org`).
 - `--skip-deps`: Do not auto-load transitive dependencies.

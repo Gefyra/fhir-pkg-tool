@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build (skip tests)
+        run: mvn -B -DskipTests package
+
+      - name: Capture shaded jar path
+        id: jar
+        run: |
+          JAR_PATH=$(ls target/*-jar-with-dependencies.jar | head -n 1)
+          if [ -z "$JAR_PATH" ]; then
+            echo "No shaded jar found" >&2
+            exit 1
+          fi
+          echo "jar-path=$JAR_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: ${{ steps.jar.outputs.jar-path }}
+          generate_release_notes: true

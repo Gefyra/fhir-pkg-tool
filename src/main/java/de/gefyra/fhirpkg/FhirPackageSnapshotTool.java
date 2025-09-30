@@ -44,8 +44,16 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     @Option(names = {"--sushi-deps-file"}, description = "Path to sushi-config.yaml (or a file containing the YAML dependencies)")
     Path sushiDepsFile;
 
-    @Option(names = {"-o", "--out"}, description = "Output directory for StructureDefinitions (default: ./out)")
-    Path outDir = Paths.get("out");
+    private static Path defaultOutputDir() {
+        String appData = System.getenv("APPDATA");
+        if (appData != null && !appData.isBlank()) {
+            return Paths.get(appData, "fhir", "packages");
+        }
+        return Paths.get(System.getProperty("user.home"), ".fhir", "packages");
+    }
+
+    @Option(names = {"-o", "--out"}, description = "Output directory for StructureDefinitions (default: %APPDATA%\\fhir\\packages on Windows, ~/.fhir/packages on Linux/macOS)")
+    Path outDir = defaultOutputDir();
 
     @Option(names = {"--cache"}, description = "Local cache folder for NPM packages (default: ~/.fhir/packages)")
     Path cacheDir = Paths.get(System.getProperty("user.home"), ".fhir", "packages");
@@ -88,10 +96,13 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
                         .forEach(requested::add);
             }
         }
-        requested.addAll(gatherPkgCoordsFromSushi(sushiDepsFile, sushiDepsStr));
+        List<String> sushiPackages = gatherPkgCoordsFromSushi(sushiDepsFile, sushiDepsStr);
+        requested.addAll(sushiPackages);
 
-        if (requested.isEmpty()) {
-            System.err.println("No packages specified. Use -p or --sushi-deps-*. Aborting.");
+        Optional<String> sushiFhirVersion = gatherFhirVersionFromSushi(sushiDepsFile);
+
+        if (requested.isEmpty() && profilesDir == null) {
+            System.err.println("No packages specified. Use -p or --sushi-deps-* (or provide --profiles-dir). Aborting.");
             return 2;
         }
 
@@ -123,13 +134,23 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         }
 
         if (allPkgs.isEmpty()) {
-            System.err.println("No packages loaded – aborting.");
-            return 3;
+            if (profilesDir == null) {
+                System.err.println("No packages loaded – aborting.");
+                return 3;
+            }
+            System.out.println("No FHIR packages loaded; continuing with local profiles only.");
         }
 
-        // 5) Choose FHIR context from the first package
-        NpmPackage contextPkg = allPkgs.get(0);
-        FhirContext ctx = pickFhirContext(contextPkg);
+        // 5) Choose FHIR context: prefer sushi-config value when provided, otherwise fallback to packages/default
+        FhirContext ctx;
+        if (sushiFhirVersion.isPresent()) {
+            ctx = pickFhirContext(sushiFhirVersion.get());
+        } else if (!allPkgs.isEmpty()) {
+            ctx = pickFhirContext(allPkgs.get(0));
+        } else {
+            System.err.println("No FHIR version available; defaulting to R5 context.");
+            ctx = pickFhirContext((String) null);
+        }
 
         // 6) Build ValidationSupport chain
         IValidationSupport chain = buildValidationChain(ctx, allPkgs);
@@ -203,7 +224,34 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
             } else {
                 Path localOutBase = outDir.resolve("local");
                 SnapshotGeneratingValidationSupport snap = new SnapshotGeneratingValidationSupport(ctx);
-                ValidationSupportContext vsc = new ValidationSupportContext(chain);
+
+                // Build a local support layer with all local resources so cross-references resolve (bases, extensions)
+                NpmPackageValidationSupport localSupport = new NpmPackageValidationSupport(ctx);
+                var parser = ctx.newJsonParser();
+                parser.setParserErrorHandler(new ca.uhn.fhir.parser.LenientErrorHandler(false));
+
+                // First pass: load all JSON resources from the folder into localSupport
+                try (var stream = Files.walk(profilesDir)) {
+                    for (Path f : (Iterable<Path>) stream::iterator) {
+                        if (Files.isDirectory(f)) continue;
+                        String fn = f.getFileName().toString().toLowerCase(Locale.ROOT);
+                        if (!fn.endsWith(".json")) continue;
+                        try {
+                            String input = Files.readString(f);
+                            // parse and add any FHIR resource present; failures are non-fatal
+                            IBaseResource res = parser.parseResource(input);
+                            if (res != null) {
+                                localSupport.addResource(res);
+                            }
+                        } catch (Exception e) {
+                            System.err.printf(Locale.ROOT, "Skip (load into support) failed: %s (%s)%n", f, e.getMessage());
+                        }
+                    }
+                }
+
+                // Use a chain that prefers local resources first, then the package chain
+                IValidationSupport localChain = new ValidationSupportChain(localSupport, chain);
+                ValidationSupportContext vsc = new ValidationSupportContext(localChain);
 
                 try (var stream = Files.walk(profilesDir)) {
                     for (Path f : (Iterable<Path>) stream::iterator) {
@@ -228,8 +276,8 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
                         boolean didGenerate = forceSnapshot || !hasSnapshot;
                         if (didGenerate) {
                             try {
-                                IBaseResource parsed = ctx.newJsonParser().parseResource(json);
-                                IBaseResource withSnap = snap.generateSnapshot(vsc, parsed, getUrlFromJson(json), null, getNameFromJson(json));
+                                IBaseResource parsedRes = parser.parseResource(json);
+                                IBaseResource withSnap = snap.generateSnapshot(vsc, parsedRes, getUrlFromJson(json), null, getNameFromJson(json));
                                 json = pretty
                                         ? ctx.newJsonParser().setPrettyPrint(true).encodeResourceToString(withSnap)
                                         : ctx.newJsonParser().encodeResourceToString(withSnap);
@@ -307,7 +355,11 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     }
 
     private static FhirContext pickFhirContext(NpmPackage pkg) {
-        String fhirVer = Optional.ofNullable(pkg.fhirVersion()).orElse("").toLowerCase(Locale.ROOT);
+        return pickFhirContext(pkg.fhirVersion());
+    }
+
+    private static FhirContext pickFhirContext(String version) {
+        String fhirVer = Optional.ofNullable(version).orElse("").toLowerCase(Locale.ROOT);
         if (fhirVer.startsWith("5")) {
             return FhirContext.forR5Cached();
         } else if (fhirVer.startsWith("4.3")) {
@@ -397,6 +449,54 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
             all.addAll(parseSushiDepsYaml(inlineYaml));
         }
         return all;
+    }
+
+    private static Optional<String> gatherFhirVersionFromSushi(Path file) throws IOException {
+        if (file == null) {
+            return Optional.empty();
+        }
+        return parseSushiFhirVersion(Files.readString(file));
+    }
+
+    private static Optional<String> parseSushiFhirVersion(String yamlText) {
+        if (yamlText == null || yamlText.isBlank()) return Optional.empty();
+        Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
+        Object root = yaml.load(yamlText);
+        if (!(root instanceof Map<?, ?> map)) return Optional.empty();
+        Object raw = map.get("fhirVersion");
+        return extractFhirVersion(raw);
+    }
+
+    private static Optional<String> extractFhirVersion(Object node) {
+        if (node == null) return Optional.empty();
+        if (node instanceof String s) {
+            String trimmed = s.trim();
+            return trimmed.isBlank() ? Optional.empty() : Optional.of(trimmed);
+        }
+        if (node instanceof Collection<?> coll) {
+            for (Object entry : coll) {
+                if (entry == null) continue;
+                String trimmed = entry.toString().trim();
+                if (!trimmed.isBlank()) {
+                    return Optional.of(trimmed);
+                }
+            }
+            return Optional.empty();
+        }
+        if (node.getClass().isArray()) {
+            int length = java.lang.reflect.Array.getLength(node);
+            for (int i = 0; i < length; i++) {
+                Object entry = java.lang.reflect.Array.get(node, i);
+                if (entry == null) continue;
+                String trimmed = entry.toString().trim();
+                if (!trimmed.isBlank()) {
+                    return Optional.of(trimmed);
+                }
+            }
+            return Optional.empty();
+        }
+        String fallback = node.toString().trim();
+        return fallback.isBlank() ? Optional.empty() : Optional.of(fallback);
     }
 
     // --- Minimal JSON helpers (avoid full parse when only url/name/id are needed) ---
