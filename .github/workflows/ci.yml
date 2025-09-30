@@ -26,10 +26,9 @@ jobs:
       - name: List target contents
         run: ls -la target || true
 
-      - name: Upload shaded jar
+      - name: Upload fat jar
         uses: actions/upload-artifact@v4
         with:
-          name: fhir-pkg-tool-jar-with-dependencies
-          path: |
-            target/*-jar-with-dependencies.jar
+          name: fhir-pkg-tool.jar
+          path: target/fhir-pkg-tool.jar
           if-no-files-found: error
