@@ -1,5 +1,13 @@
 # FHIR Package Snapshot Tool (Java 21, HAPI 8)
 
+![Build](https://github.com/patrickwerner/fhir-pkg-tool/actions/workflows/ci.yml/badge.svg)
+![Release Workflow](https://github.com/patrickwerner/fhir-pkg-tool/actions/workflows/release.yml/badge.svg)
+[![Latest Release](https://img.shields.io/github/v/release/patrickwerner/fhir-pkg-tool?logo=github&label=Latest%20Release)](https://github.com/patrickwerner/fhir-pkg-tool/releases/latest)
+![Dependabot](https://img.shields.io/badge/dependabot-enabled-blue?logo=dependabot)
+![License](https://img.shields.io/badge/license-Apache--2.0-brightgreen)
+![Java](https://img.shields.io/badge/Java-21-orange?logo=openjdk&logoColor=white)
+![FHIR](https://img.shields.io/badge/FHIR-R4%20%7C%20R4B%20%7C%20R5-red?logo=hl7&logoColor=white)
+
 A small CLI tool that downloads FHIR NPM packages from the registry, resolves recursive dependencies, and generates snapshots for `StructureDefinition`s.
 
 ## Features
