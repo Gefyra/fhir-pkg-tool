@@ -102,6 +102,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     Path profilesDir;
 
     public static void main(String[] args) {
+        System.out.println("FHIR Package Tool starting...");
         int exit = new CommandLine(new FhirPackageSnapshotTool()).execute(args);
         System.exit(exit);
     }
