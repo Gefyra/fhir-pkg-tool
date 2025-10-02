@@ -49,6 +49,13 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         if (appData != null && !appData.isBlank()) {
             return Paths.get(appData, "fhir", "packages");
         }
+        
+        // Check for GITHUB_HOME environment variable (GitHub Actions runner)
+        String githubHome = System.getenv("GITHUB_HOME");
+        if (githubHome != null && !githubHome.isBlank()) {
+            return Paths.get(githubHome, ".fhir", "packages");
+        }
+        
         return Paths.get(System.getProperty("user.home"), ".fhir", "packages");
     }
 
@@ -56,7 +63,17 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     Path outDir = defaultOutputDir();
 
     @Option(names = {"--cache"}, description = "Local cache folder for NPM packages (default: ~/.fhir/packages)")
-    Path cacheDir = Paths.get(System.getProperty("user.home"), ".fhir", "packages");
+    Path cacheDir = defaultCacheDir();
+
+    private static Path defaultCacheDir() {
+        // Check for GITHUB_HOME environment variable (GitHub Actions runner)
+        String githubHome = System.getenv("GITHUB_HOME");
+        if (githubHome != null && !githubHome.isBlank()) {
+            return Paths.get(githubHome, ".fhir", "packages");
+        }
+        
+        return Paths.get(System.getProperty("user.home"), ".fhir", "packages");
+    }
 
     @Option(names = {"--registry"}, description = "Package registry (default: https://packages.fhir.org)")
     String registryUrl = "https://packages.fhir.org";
@@ -109,6 +126,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         // 2) Configure package cache/registry
         // FilesystemPackageCacheManager in utilities 6.6.6 uses a Builder API
         Files.createDirectories(cacheDir);
+        Set<Path> knownCacheDirs = initKnownCacheDirs(cacheDir);
         FilesystemPackageCacheManager.Builder cacheBuilder = new FilesystemPackageCacheManager.Builder()
                 .withCacheFolder(cacheDir.toString())
                 .withPackageServers(List.of(new PackageServer(registryUrl)));
@@ -118,7 +136,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         List<NpmPackage> allPkgs = new ArrayList<>();
         Set<String> seenByName = new HashSet<>();
         for (String coord : requested) {
-            NpmPackage p = loadPackage(cache, coord);
+            NpmPackage p = loadPackage(cache, coord, knownCacheDirs);
             if (seenByName.add(p.name())) {
                 allPkgs.add(p);
             }
@@ -128,7 +146,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         if (!skipDependencies) {
             for (int i = 0; i < allPkgs.size(); i++) {
                 NpmPackage root = allPkgs.get(i);
-                List<NpmPackage> deps = loadAllDependencies(cache, root, seenByName);
+                List<NpmPackage> deps = loadAllDependencies(cache, root, seenByName, knownCacheDirs);
                 allPkgs.addAll(deps);
             }
         }
@@ -316,7 +334,9 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     // Look for a top-level field named "snapshot"; avoid '{' to sidestep JDK21 preview parsing issues
     private static final Pattern SNAPSHOT_FIELD = Pattern.compile("\\\"snapshot\\\"\\s*:", Pattern.DOTALL);
 
-    private static NpmPackage loadPackage(IPackageCacheManager cache, String coordinate) throws IOException {
+    private static NpmPackage loadPackage(IPackageCacheManager cache,
+                                          String coordinate,
+                                          Set<Path> knownCacheDirs) throws IOException {
         String name = coordinate;
         String version = null;
         if (coordinate.contains("@")) {
@@ -324,12 +344,17 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
             name = parts[0];
             version = parts[1];
         }
-        return (version == null || version.isBlank()) ? cache.loadPackage(name) : cache.loadPackage(name, version);
+        NpmPackage pkg = (version == null || version.isBlank())
+                ? cache.loadPackage(name)
+                : cache.loadPackage(name, version);
+        notePackageCacheLocation(pkg, knownCacheDirs);
+        return pkg;
     }
 
     private static List<NpmPackage> loadAllDependencies(IPackageCacheManager cache,
                                                         NpmPackage root,
-                                                        Set<String> seenByName) throws IOException {
+                                                        Set<String> seenByName,
+                                                        Set<Path> knownCacheDirs) throws IOException {
         List<String> deps = root.dependencies(); // e.g., entries like "package.id#1.2.3"
         if (deps == null || deps.isEmpty()) return List.of();
 
@@ -348,8 +373,9 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
             NpmPackage p = (version == null || version.isBlank())
                     ? cache.loadPackage(name)
                     : cache.loadPackage(name, version);
+            notePackageCacheLocation(p, knownCacheDirs);
             out.add(p);
-            out.addAll(loadAllDependencies(cache, p, seenByName));
+            out.addAll(loadAllDependencies(cache, p, seenByName, knownCacheDirs));
         }
         return out;
     }
@@ -411,6 +437,53 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
                 commonTerminology,
                 inMemTerm
         );
+    }
+
+    private static Set<Path> initKnownCacheDirs(Path cacheDir) {
+        Set<Path> known = new HashSet<>();
+        if (cacheDir == null) {
+            return known;
+        }
+        try {
+            if (Files.exists(cacheDir) && Files.isDirectory(cacheDir)) {
+                try (var stream = Files.list(cacheDir)) {
+                    for (Path entry : (Iterable<Path>) stream::iterator) {
+                        if (Files.isDirectory(entry)) {
+                            known.add(entry.toAbsolutePath().normalize());
+                        }
+                    }
+                }
+            }
+        } catch (IOException e) {
+            System.err.printf(Locale.ROOT, "Failed to scan cache directory %s: %s%n", cacheDir, e.getMessage());
+        }
+        return known;
+    }
+
+    private static void notePackageCacheLocation(NpmPackage pkg, Set<Path> knownCacheDirs) {
+        if (pkg == null || knownCacheDirs == null) {
+            return;
+        }
+        String rawPath = pkg.getPath();
+        if (rawPath == null || rawPath.isBlank()) {
+            return;
+        }
+        try {
+            Path resolved = Paths.get(rawPath).toAbsolutePath().normalize();
+            if (knownCacheDirs.add(resolved)) {
+                System.out.printf(Locale.ROOT,
+                        "Cached package %s#%s at %s%n",
+                        Optional.ofNullable(pkg.name()).orElse(""),
+                        Optional.ofNullable(pkg.version()).orElse(""),
+                        resolved);
+            }
+        } catch (Exception e) {
+            System.err.printf(Locale.ROOT,
+                    "Cached package %s#%s but resolved cache path failed: %s%n",
+                    Optional.ofNullable(pkg.name()).orElse(""),
+                    Optional.ofNullable(pkg.version()).orElse(""),
+                    e.getMessage());
+        }
     }
 
     // --- Sushi parsing ---
