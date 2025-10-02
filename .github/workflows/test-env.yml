@@ -29,13 +29,12 @@ jobs:
           echo "HOME: $HOME"
           echo "GITHUB_ACTIONS: $GITHUB_ACTIONS"
           echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
-          echo "user.home from Java: $(java -Duser.home=/root -cp target/classes de.gefyra.fhirpkg.DebugEnvironment)"
-          echo "Expected GitHub Actions environment: $(GITHUB_ACTIONS=true HOME=/github/home java -cp target/classes de.gefyra.fhirpkg.DebugEnvironment)"
+          echo "user.home from Java: $(java -Duser.home=/root -jar target/fhir-pkg-tool.jar --help 2>&1 | head -1 || echo 'Failed')"
 
       - name: Test tool with GitHub Actions environment
         run: |
           echo "=== Testing tool output directory ==="
-          java -jar target/fhir-pkg-tool.jar -p hl7.fhir.r4.core@4.0.1 --skip-deps 2>&1 | grep "Output:" || echo "No output line found"
+          java -jar target/fhir-pkg-tool.jar -p hl7.fhir.r4.core@4.0.1 --skip-deps
           
       - name: Check created directories
         run: |
@@ -45,7 +44,7 @@ jobs:
           
           if [ -d "$HOME/.fhir/packages" ]; then
             echo "SUCCESS: Packages created in $HOME/.fhir/packages"
-            ls -la "$HOME/.fhir/packages/" | head -10
+            ls -la "$HOME/.fhir/packages/" | head -5
           else
             echo "FAILURE: No packages directory found in $HOME"
           fi
