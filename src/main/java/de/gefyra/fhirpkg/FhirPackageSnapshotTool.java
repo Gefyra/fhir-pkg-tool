@@ -108,6 +108,22 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
 
     @Override
     public Integer call() throws Exception {
+        // Debug output: Show which directories will be used
+        System.out.println("FHIR Package Tool Configuration:");
+        System.out.println("  Output directory: " + outDir.toAbsolutePath());
+        System.out.println("  Cache directory: " + cacheDir.toAbsolutePath());
+        
+        // Show how directories were determined
+        String githubActions = System.getenv("GITHUB_ACTIONS");
+        if ("true".equals(githubActions)) {
+            System.out.println("  GitHub Actions detected (GITHUB_ACTIONS=true)");
+            System.out.println("  HOME environment variable: " + System.getenv("HOME"));
+            System.out.println("  user.home system property: " + System.getProperty("user.home"));
+        } else {
+            System.out.println("  Running in local environment");
+        }
+        System.out.println();
+        
         Files.createDirectories(outDir);
 
         // 1) Collect package coordinates: -p (comma-separated is fine), Sushi file, Sushi inline string
@@ -333,8 +349,12 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         }
 
         System.out.printf(Locale.ROOT,
-                "Done: %d SDs found, %d snapshots generated, %d SD files written, %d files copied. Local: %d SDs, %d generated, %d written. Output: %s%n",
-                total, generated, sdWritten, filesCopied, localTotal, localGenerated, localWritten, outDir.toAbsolutePath());
+                "Done: %d SDs found, %d snapshots generated, %d SD files written, %d files copied. Local: %d SDs, %d generated, %d written.%n",
+                total, generated, sdWritten, filesCopied, localTotal, localGenerated, localWritten);
+        System.out.printf(Locale.ROOT,
+                "Output directory: %s%n", outDir.toAbsolutePath());
+        System.out.printf(Locale.ROOT,
+                "Cache directory: %s%n", cacheDir.toAbsolutePath());
 
         return 0;
     }
