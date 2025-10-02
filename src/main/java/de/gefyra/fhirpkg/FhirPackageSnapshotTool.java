@@ -44,16 +44,20 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     @Option(names = {"--sushi-deps-file"}, description = "Path to sushi-config.yaml (or a file containing the YAML dependencies)")
     Path sushiDepsFile;
 
-    private static Path defaultOutputDir() {
+    public static Path defaultOutputDir() {
         String appData = System.getenv("APPDATA");
         if (appData != null && !appData.isBlank()) {
             return Paths.get(appData, "fhir", "packages");
         }
         
-        // Check for GITHUB_HOME environment variable (GitHub Actions runner)
-        String githubHome = System.getenv("GITHUB_HOME");
-        if (githubHome != null && !githubHome.isBlank()) {
-            return Paths.get(githubHome, ".fhir", "packages");
+        // Check if we're in GitHub Actions
+        String githubActions = System.getenv("GITHUB_ACTIONS");
+        if ("true".equals(githubActions)) {
+            // In GitHub Actions, use HOME env var instead of user.home property
+            String home = System.getenv("HOME");
+            if (home != null && !home.isBlank()) {
+                return Paths.get(home, ".fhir", "packages");
+            }
         }
         
         return Paths.get(System.getProperty("user.home"), ".fhir", "packages");
@@ -65,11 +69,15 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     @Option(names = {"--cache"}, description = "Local cache folder for NPM packages (default: ~/.fhir/packages)")
     Path cacheDir = defaultCacheDir();
 
-    private static Path defaultCacheDir() {
-        // Check for GITHUB_HOME environment variable (GitHub Actions runner)
-        String githubHome = System.getenv("GITHUB_HOME");
-        if (githubHome != null && !githubHome.isBlank()) {
-            return Paths.get(githubHome, ".fhir", "packages");
+    public static Path defaultCacheDir() {
+        // Check if we're in GitHub Actions
+        String githubActions = System.getenv("GITHUB_ACTIONS");
+        if ("true".equals(githubActions)) {
+            // In GitHub Actions, use HOME env var instead of user.home property
+            String home = System.getenv("HOME");
+            if (home != null && !home.isBlank()) {
+                return Paths.get(home, ".fhir", "packages");
+            }
         }
         
         return Paths.get(System.getProperty("user.home"), ".fhir", "packages");

@@ -1,0 +1,51 @@
+name: Test Environment
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-env:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn -B package -DskipTests
+
+      - name: Test environment variables
+        run: |
+          echo "=== Environment Variables ==="
+          echo "HOME: $HOME"
+          echo "GITHUB_ACTIONS: $GITHUB_ACTIONS"
+          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
+          echo "user.home from Java: $(java -Duser.home=/root -cp target/classes de.gefyra.fhirpkg.DebugEnvironment)"
+          echo "Expected GitHub Actions environment: $(GITHUB_ACTIONS=true HOME=/github/home java -cp target/classes de.gefyra.fhirpkg.DebugEnvironment)"
+
+      - name: Test tool with GitHub Actions environment
+        run: |
+          echo "=== Testing tool output directory ==="
+          java -jar target/fhir-pkg-tool.jar -p hl7.fhir.r4.core@4.0.1 --skip-deps 2>&1 | grep "Output:" || echo "No output line found"
+          
+      - name: Check created directories
+        run: |
+          echo "=== Checking created directories ==="
+          find $HOME -name ".fhir" -type d 2>/dev/null || echo "No .fhir dir in HOME ($HOME)"
+          find /root -name ".fhir" -type d 2>/dev/null || echo "No .fhir dir in /root"
+          
+          if [ -d "$HOME/.fhir/packages" ]; then
+            echo "SUCCESS: Packages created in $HOME/.fhir/packages"
+            ls -la "$HOME/.fhir/packages/" | head -10
+          else
+            echo "FAILURE: No packages directory found in $HOME"
+          fi
