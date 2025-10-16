@@ -143,7 +143,12 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
 
         Optional<String> sushiFhirVersion = gatherFhirVersionFromSushi(sushiDepsFile);
 
+        // If only sushi-config is provided but no dependencies found, that's OK - just skip package installation
         if (requested.isEmpty() && profilesDir == null) {
+            if (sushiDepsFile != null || sushiDepsStr != null) {
+                System.out.println("No dependencies found in sushi-config, skipping package installation.");
+                return 0;
+            }
             System.err.println("No packages specified. Use -p or --sushi-deps-* (or provide --profiles-dir). Aborting.");
             return 2;
         }
