@@ -522,7 +522,9 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         Object root = yaml.load(yamlText);
         if (!(root instanceof Map<?, ?> map)) return List.of();
 
-        Object depsNode = map.containsKey("dependencies") ? map.get("dependencies") : root;
+        // Only parse the "dependencies" section, not the entire root
+        if (!map.containsKey("dependencies")) return List.of();
+        Object depsNode = map.get("dependencies");
         if (!(depsNode instanceof Map<?, ?> deps)) return List.of();
 
         List<String> coords = new ArrayList<>();
