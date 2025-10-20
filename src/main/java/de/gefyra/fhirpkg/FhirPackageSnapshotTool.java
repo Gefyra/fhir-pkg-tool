@@ -279,11 +279,10 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
                 parser.setParserErrorHandler(new ca.uhn.fhir.parser.LenientErrorHandler(false));
 
                 // First pass: load all JSON resources from the folder into localSupport
-                try (var stream = Files.walk(profilesDir)) {
+                try (var stream = Files.find(profilesDir, Integer.MAX_VALUE,
+                        (path, attrs) -> !attrs.isDirectory()
+                                && path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))) {
                     for (Path f : (Iterable<Path>) stream::iterator) {
-                        if (Files.isDirectory(f)) continue;
-                        String fn = f.getFileName().toString().toLowerCase(Locale.ROOT);
-                        if (!fn.endsWith(".json")) continue;
                         try {
                             String input = Files.readString(f);
                             // parse and add any FHIR resource present; failures are non-fatal
@@ -301,11 +300,10 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
                 IValidationSupport localChain = new ValidationSupportChain(localSupport, chain);
                 ValidationSupportContext vsc = new ValidationSupportContext(localChain);
 
-                try (var stream = Files.walk(profilesDir)) {
+                try (var stream = Files.find(profilesDir, Integer.MAX_VALUE,
+                        (path, attrs) -> !attrs.isDirectory()
+                                && path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))) {
                     for (Path f : (Iterable<Path>) stream::iterator) {
-                        if (Files.isDirectory(f)) continue;
-                        String fn = f.getFileName().toString().toLowerCase(Locale.ROOT);
-                        if (!fn.endsWith(".json")) continue;
 
                         String json;
                         try {
