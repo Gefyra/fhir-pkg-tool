@@ -175,8 +175,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         Set<String> seenByName = new HashSet<>();
         for (String coord : requested) {
             // Skip problematic package: hl7.fhir.extensions.r5@4.0.1
-            if (coord.startsWith("hl7.fhir.extensions.r5@4.0.1") || 
-                coord.startsWith("hl7.fhir.extensions.r5#4.0.1")) {
+            if (coord.equals("hl7.fhir.extensions.r5@4.0.1")) {
                 System.out.printf(Locale.ROOT, "Skipping known problematic package: %s%n", coord);
                 continue;
             }
