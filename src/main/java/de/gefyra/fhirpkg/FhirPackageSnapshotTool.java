@@ -166,6 +166,12 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         List<NpmPackage> allPkgs = new ArrayList<>();
         Set<String> seenByName = new HashSet<>();
         for (String coord : requested) {
+            // Skip problematic package: hl7.fhir.extensions.r5@4.0.1
+            if (coord.equals("hl7.fhir.extensions.r5@4.0.1")) {
+                System.out.printf(Locale.ROOT, "Skipping known problematic package: %s%n", coord);
+                continue;
+            }
+            
             NpmPackage p = loadPackage(cache, coord, knownCacheDirs);
             if (seenByName.add(p.name())) {
                 allPkgs.add(p);
@@ -547,6 +553,13 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
                 Object ver = m.get("version");
                 if (ver != null) version = String.valueOf(ver).trim();
             }
+            
+            // Skip problematic package: hl7.fhir.extensions.r5#4.0.1
+            if ("hl7.fhir.extensions.r5".equals(pkgName) && "4.0.1".equals(version)) {
+                System.out.printf(Locale.ROOT, "Skipping known problematic package from sushi-config: %s@%s%n", pkgName, version);
+                continue;
+            }
+            
             coords.add((version == null || version.isBlank()) ? pkgName : (pkgName + "@" + version));
         }
         return coords;
