@@ -400,6 +400,12 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
                 version = entry.substring(hashIdx + 1);
             }
 
+            // Skip problematic package: hl7.fhir.extensions.r5#4.0.1
+            if ("hl7.fhir.extensions.r5".equals(name) && "4.0.1".equals(version)) {
+                System.out.printf(Locale.ROOT, "Skipping known problematic package: %s#%s%n", name, version);
+                continue;
+            }
+
             if (!seenByName.add(name)) continue; // already loaded
 
             NpmPackage p = (version == null || version.isBlank())
