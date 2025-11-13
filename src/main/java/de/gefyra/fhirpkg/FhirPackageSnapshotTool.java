@@ -140,6 +140,14 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         }
         List<String> sushiPackages = gatherPkgCoordsFromSushi(sushiDepsFile, sushiDepsStr);
         requested.addAll(sushiPackages);
+        
+        // Debug: Show all requested packages
+        if (!requested.isEmpty()) {
+            System.out.println("Requested packages:");
+            for (String pkg : requested) {
+                System.out.println("  - " + pkg);
+            }
+        }
 
         Optional<String> sushiFhirVersion = gatherFhirVersionFromSushi(sushiDepsFile);
 
@@ -167,7 +175,8 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         Set<String> seenByName = new HashSet<>();
         for (String coord : requested) {
             // Skip problematic package: hl7.fhir.extensions.r5@4.0.1
-            if (coord.equals("hl7.fhir.extensions.r5@4.0.1")) {
+            if (coord.startsWith("hl7.fhir.extensions.r5@4.0.1") || 
+                coord.startsWith("hl7.fhir.extensions.r5#4.0.1")) {
                 System.out.printf(Locale.ROOT, "Skipping known problematic package: %s%n", coord);
                 continue;
             }
