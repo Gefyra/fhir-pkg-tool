@@ -77,7 +77,7 @@ Notes:
 - `-p, --package`: One or more package coordinates (`name@version`). Comma-separated allowed, can be repeated.
 - `--sushi-deps-file`: Path to a `sushi-config.yaml` (dependencies are read).
 - `--sushi-deps-str`: Inline YAML block containing `dependencies:`.
-- `-o, --out`: Output directory (default: `%APPDATA%\fhir\packages` on Windows, `~/.fhir/packages` on Linux/macOS). Each package is copied to a subfolder `<id>#<version>`.
+- `-o, --out`: Output directory (default: `~/.fhir/packages`; on Windows: `C:\Users\<USER>\.fhir\packages`). Each package is copied to a subfolder `<id>#<version>`.
 - `--cache`: Local NPM package cache directory (default: `~/.fhir/packages`).
 - `--registry`: Package registry URL (default: `https://packages.fhir.org`).
 - `--skip-deps`: Do not auto-load transitive dependencies.

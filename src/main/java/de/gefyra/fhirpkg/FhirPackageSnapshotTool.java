@@ -52,25 +52,10 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     Path sushiDepsFile;
 
     public static Path defaultOutputDir() {
-        String appData = System.getenv("APPDATA");
-        if (appData != null && !appData.isBlank()) {
-            return Paths.get(appData, "fhir", "packages");
-        }
-        
-        // Check if we're in GitHub Actions
-        String githubActions = System.getenv("GITHUB_ACTIONS");
-        if ("true".equals(githubActions)) {
-            // In GitHub Actions, use HOME env var instead of user.home property
-            String home = System.getenv("HOME");
-            if (home != null && !home.isBlank()) {
-                return Paths.get(home, ".fhir", "packages");
-            }
-        }
-        
-        return Paths.get(System.getProperty("user.home"), ".fhir", "packages");
+        return defaultCacheDir();
     }
 
-    @Option(names = {"-o", "--out"}, description = "Output directory for StructureDefinitions (default: %%APPDATA%%\\fhir\\packages on Windows, ~/.fhir/packages on Linux/macOS)")
+    @Option(names = {"-o", "--out"}, description = "Output directory for StructureDefinitions (default: ~/.fhir/packages; Windows: C:\\Users\\<USER>\\.fhir\\packages)")
     Path outDir = defaultOutputDir();
 
     @Option(names = {"--cache"}, description = "Local cache folder for NPM packages (default: ~/.fhir/packages)")
