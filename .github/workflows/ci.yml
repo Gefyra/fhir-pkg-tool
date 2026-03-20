@@ -32,3 +32,24 @@ jobs:
           name: fhir-pkg-tool.jar
           path: target/fhir-pkg-tool.jar
           if-no-files-found: error
+
+  native-smoke:
+    name: Native Smoke (Linux x64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up GraalVM JDK 21
+        uses: graalvm/setup-graalvm@v1
+        with:
+          distribution: graalvm-community
+          java-version: '21'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Build native image (skip tests)
+        run: mvn -B -DskipTests -Pnative verify
+
+      - name: Smoke test native binary
+        run: ./target/fhir-pkg-tool --help

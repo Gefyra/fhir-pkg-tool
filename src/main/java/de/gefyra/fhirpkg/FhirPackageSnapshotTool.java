@@ -19,6 +19,7 @@ import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
 import picocli.CommandLine;
+import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
 import java.io.IOException;
@@ -32,6 +33,12 @@ import java.util.regex.Pattern;
  * CLI tool that downloads FHIR NPM packages, resolves dependencies, generates StructureDefinition snapshots,
  * and writes them as JSON files.
  */
+@Command(
+    name = "fhir-pkg-tool",
+    mixinStandardHelpOptions = true,
+    version = "1.0-SNAPSHOT",
+    description = "Downloads FHIR NPM packages, resolves dependencies, generates StructureDefinition snapshots, and writes them as JSON files."
+)
 public class FhirPackageSnapshotTool implements Callable<Integer> {
 
     @Option(names = {"-p", "--package"},
@@ -174,7 +181,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         List<NpmPackage> allPkgs = new ArrayList<>();
         Set<String> seenByName = new HashSet<>();
         for (String coord : requested) {
-            // Skip problematic package: hl7.fhir.extensions.r5@4.0.1
+            // Replace problematic version: hl7.fhir.extensions.r5@4.0.1 with latest
             if (coord.equals("hl7.fhir.extensions.r5@4.0.1")) {
                 System.out.printf(Locale.ROOT, "Skipping known problematic package: %s%n", coord);
                 continue;
@@ -220,27 +227,35 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         // 7) If no --profiles-dir: copy packages and snapshot their StructureDefinitions
         //    If --profiles-dir is present: skip package output entirely (local-only output)
         int generated = 0, total = 0, sdWritten = 0, filesCopied = 0;
+        boolean outIsCache = outDir.toAbsolutePath().normalize().equals(cacheDir.toAbsolutePath().normalize());
+        if (outIsCache) {
+            System.out.println("Output directory equals cache directory - will only update StructureDefinition snapshots in-place");
+        }
+        
         if (profilesDir == null) {
             for (NpmPackage p : allPkgs) {
                 String pkgFolderName = p.name() + "#" + p.version();
                 Path pkgOutDir = outDir.resolve(pkgFolderName);
-                // 7a) Copy all folders/files
-                var folders = p.getFolders();
-                for (Map.Entry<String, org.hl7.fhir.utilities.npm.NpmPackage.NpmPackageFolder> e : folders.entrySet()) {
-                    String folderName = e.getKey();
-                    var folder = e.getValue();
-                    Path folderOut = pkgOutDir.resolve(folderName);
-                    Files.createDirectories(folderOut);
-                    for (String fname : folder.listFiles()) {
-                        Path target = folderOut.resolve(fname);
-                        if (!overwrite && Files.exists(target)) {
-                            continue;
-                        }
-                        try (InputStream is = p.load(folderName, fname)) {
-                            if (is == null) continue;
-                            byte[] bytes = is.readAllBytes();
-                            Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-                            filesCopied++;
+                
+                // 7a) Copy all folders/files - SKIP if output equals cache to avoid corrupting cache
+                if (!outIsCache) {
+                    var folders = p.getFolders();
+                    for (Map.Entry<String, org.hl7.fhir.utilities.npm.NpmPackage.NpmPackageFolder> e : folders.entrySet()) {
+                        String folderName = e.getKey();
+                        var folder = e.getValue();
+                        Path folderOut = pkgOutDir.resolve(folderName);
+                        Files.createDirectories(folderOut);
+                        for (String fname : folder.listFiles()) {
+                            Path target = folderOut.resolve(fname);
+                            if (!overwrite && Files.exists(target)) {
+                                continue;
+                            }
+                            try (InputStream is = p.load(folderName, fname)) {
+                                if (is == null) continue;
+                                byte[] bytes = is.readAllBytes();
+                                Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                                filesCopied++;
+                            }
                         }
                     }
                 }

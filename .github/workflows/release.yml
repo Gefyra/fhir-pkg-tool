@@ -6,12 +6,9 @@ on:
       - 'v*'
 
 jobs:
-  release:
+  build-jar:
+    name: Build Jar
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: write
-
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -26,20 +23,89 @@ jobs:
       - name: Build (skip tests)
         run: mvn -B -DskipTests package
 
-      - name: Capture shaded jar path
-        id: jar
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: fhir-pkg-tool.jar
+          path: target/fhir-pkg-tool.jar
+          if-no-files-found: error
+
+  build-native:
+    name: Build Native (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+            ext: ""
+          - runner: windows-2025
+            target: windows-x64
+            ext: ".exe"
+          - runner: macos-15
+            target: macos-arm64
+            ext: ""
+          - runner: macos-15-intel
+            target: macos-x64
+            ext: ""
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up GraalVM JDK 21
+        uses: graalvm/setup-graalvm@v1
+        with:
+          distribution: graalvm-community
+          java-version: '21'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Build native image (skip tests)
+        run: mvn -B -DskipTests -Pnative verify
+
+      - name: Rename native executable
+        shell: bash
         run: |
-          JAR_PATH="target/fhir-pkg-tool.jar"
-          if [ ! -f "$JAR_PATH" ]; then
-            echo "No shaded jar found at $JAR_PATH" >&2
+          BIN="target/fhir-pkg-tool${{ matrix.ext }}"
+          OUT="target/fhir-pkg-tool-${{ matrix.target }}${{ matrix.ext }}"
+          if [ ! -f "$BIN" ]; then
+            echo "Expected native binary not found: $BIN" >&2
+            ls -la target || true
             exit 1
           fi
-          echo "jar-path=$JAR_PATH" >> "$GITHUB_OUTPUT"
+          mv "$BIN" "$OUT"
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: native-${{ matrix.target }}
+          path: target/fhir-pkg-tool-${{ matrix.target }}${{ matrix.ext }}
+          if-no-files-found: error
+
+  release:
+    name: Publish Release
+    needs: [build-jar, build-native]
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          files: ${{ steps.jar.outputs.jar-path }}
+          files: |
+            dist/fhir-pkg-tool.jar/fhir-pkg-tool.jar
+            dist/native-linux-x64/fhir-pkg-tool-linux-x64
+            dist/native-macos-arm64/fhir-pkg-tool-macos-arm64
+            dist/native-macos-x64/fhir-pkg-tool-macos-x64
+            dist/native-windows-x64/fhir-pkg-tool-windows-x64.exe
           generate_release_notes: true

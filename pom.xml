@@ -12,7 +12,7 @@
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <hapi.version>8.4.0</hapi.version>
+    <hapi.version>8.6.5</hapi.version>
   </properties>
 
   <dependencies>
@@ -43,6 +43,12 @@
       <groupId>ca.uhn.hapi.fhir</groupId>
       <artifactId>hapi-fhir-validation</artifactId>
       <version>${hapi.version}</version>
+      <exclusions>
+        <exclusion>
+          <groupId>org.xerial</groupId>
+          <artifactId>sqlite-jdbc</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
 
     <!-- FHIR utilities are pulled transitively by HAPI; avoid forcing a mismatched version -->
@@ -52,6 +58,13 @@
       <groupId>info.picocli</groupId>
       <artifactId>picocli</artifactId>
       <version>4.7.7</version>
+    </dependency>
+
+    <dependency>
+      <groupId>info.picocli</groupId>
+      <artifactId>picocli-codegen</artifactId>
+      <version>4.7.7</version>
+      <scope>provided</scope>
     </dependency>
 
     <!-- YAML Parsing -->
@@ -121,8 +134,66 @@
         <version>3.14.1</version>
         <configuration>
           <release>21</release>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>info.picocli</groupId>
+              <artifactId>picocli-codegen</artifactId>
+              <version>4.7.7</version>
+            </path>
+          </annotationProcessorPaths>
+          <compilerArgs>
+            <arg>-Aproject=${project.groupId}/${project.artifactId}</arg>
+          </compilerArgs>
         </configuration>
       </plugin>
     </plugins>
   </build>
+
+  <!-- Profile to build a GraalVM native image from the shaded fat-jar.
+       Usage: mvn -Pnative package
+       Requires: GraalVM with the `native-image` tool available on PATH.
+       The exec plugin calls the native-image executable on the created fat jar.
+  -->
+  <profiles>
+    <profile>
+      <id>native</id>
+      <properties>
+        <!-- Set to true to skip native-image invocation when profile is active -->
+        <skipNativeImage>false</skipNativeImage>
+      </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.0.0</version>
+            <executions>
+              <execution>
+                <id>native-image</id>
+                <!-- run in verify to ensure the shaded jar was created in package -->
+                <phase>verify</phase>
+                <goals>
+                  <goal>exec</goal>
+                </goals>
+                <configuration>
+                  <skip>false</skip>
+                  <executable>native-image</executable>
+                  <arguments>
+                    <!-- Use the shaded jar produced by the shade plugin -->
+                    <argument>-jar</argument>
+                    <argument>${project.build.directory}/${project.build.finalName}.jar</argument>
+                    <argument>-H:Name=${project.build.finalName}</argument>
+                    <!-- no-fallback avoids generating a fallback image and fails if native-image can't build -->
+                    <argument>--no-fallback</argument>
+                    <!-- allow the user to pass additional options via -Dnative.image.args='...'
+                         (not parsed here — can be expanded later if needed) -->
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
