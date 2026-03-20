@@ -39,6 +39,9 @@ jobs:
           - runner: ubuntu-24.04
             target: linux-x64
             ext: ""
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+            ext: ""
           - runner: windows-2025
             target: windows-x64
             ext: ".exe"
@@ -108,6 +111,7 @@ jobs:
           name: ${{ github.ref_name }}
           files: |
             dist/fhir-pkg-tool.jar/fhir-pkg-tool.jar
+            dist/native-linux-arm64/fhir-pkg-tool-linux-arm64
             dist/native-linux-x64/fhir-pkg-tool-linux-x64
             dist/native-macos-arm64/fhir-pkg-tool-macos-arm64
             dist/native-macos-x64/fhir-pkg-tool-macos-x64
