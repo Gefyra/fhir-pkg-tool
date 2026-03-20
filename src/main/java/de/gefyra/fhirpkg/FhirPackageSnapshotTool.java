@@ -70,7 +70,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         return Paths.get(System.getProperty("user.home"), ".fhir", "packages");
     }
 
-    @Option(names = {"-o", "--out"}, description = "Output directory for StructureDefinitions (default: %APPDATA%\\fhir\\packages on Windows, ~/.fhir/packages on Linux/macOS)")
+    @Option(names = {"-o", "--out"}, description = "Output directory for StructureDefinitions (default: %%APPDATA%%\\fhir\\packages on Windows, ~/.fhir/packages on Linux/macOS)")
     Path outDir = defaultOutputDir();
 
     @Option(names = {"--cache"}, description = "Local cache folder for NPM packages (default: ~/.fhir/packages)")
