@@ -150,7 +150,7 @@
   </build>
 
   <!-- Profile to build a GraalVM native image from the shaded fat-jar.
-       Usage: mvn -Pnative package
+       Usage: mvn -Pnative verify
        Requires: GraalVM with the `native-image` tool available on PATH.
        The exec plugin calls the native-image executable on the created fat jar.
   -->
@@ -176,13 +176,14 @@
                   <goal>exec</goal>
                 </goals>
                 <configuration>
-                  <skip>false</skip>
+                  <skip>${skipNativeImage}</skip>
                   <executable>native-image</executable>
                   <arguments>
                     <!-- Use the shaded jar produced by the shade plugin -->
                     <argument>-jar</argument>
                     <argument>${project.build.directory}/${project.build.finalName}.jar</argument>
                     <argument>-H:Name=${project.build.finalName}</argument>
+                    <argument>-H:Path=${project.build.directory}</argument>
                     <!-- no-fallback avoids generating a fallback image and fails if native-image can't build -->
                     <argument>--no-fallback</argument>
                     <!-- allow the user to pass additional options via -Dnative.image.args='...'

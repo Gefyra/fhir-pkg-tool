@@ -52,4 +52,16 @@ jobs:
         run: mvn -B -DskipTests -Pnative verify
 
       - name: Smoke test native binary
-        run: ./target/fhir-pkg-tool --help
+        shell: bash
+        run: |
+          BIN="./target/fhir-pkg-tool"
+          if [ ! -f "$BIN" ]; then
+            BIN="./fhir-pkg-tool"
+          fi
+          if [ ! -f "$BIN" ]; then
+            echo "Native binary not found in ./target or repo root" >&2
+            ls -la target || true
+            ls -la . || true
+            exit 1
+          fi
+          "$BIN" --help

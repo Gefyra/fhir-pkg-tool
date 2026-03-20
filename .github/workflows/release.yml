@@ -70,8 +70,12 @@ jobs:
           BIN="target/fhir-pkg-tool${{ matrix.ext }}"
           OUT="target/fhir-pkg-tool-${{ matrix.target }}${{ matrix.ext }}"
           if [ ! -f "$BIN" ]; then
-            echo "Expected native binary not found: $BIN" >&2
+            BIN="fhir-pkg-tool${{ matrix.ext }}"
+          fi
+          if [ ! -f "$BIN" ]; then
+            echo "Expected native binary not found in target/ or repo root" >&2
             ls -la target || true
+            ls -la . || true
             exit 1
           fi
           mv "$BIN" "$OUT"
