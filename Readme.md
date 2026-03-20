@@ -18,11 +18,6 @@ A small CLI tool that downloads FHIR NPM packages from the registry, resolves re
 - Output layout: one subfolder per package in `--out`, named `<packageId>#<version>` (e.g. `hl7.fhir.us.core#6.1.0`). The complete package is copied there; only `StructureDefinition` JSON files are parsed and (re)written with snapshots.
 - Local profiles folder via `--profiles-dir` (recursively loads JSON `StructureDefinition`s and writes snapshots under `--out/local`)
 
-## Build
-```bash
-mvn -q -DskipTests package
-```
-
 ## Run – Examples
 
 **Multiple packages:**
