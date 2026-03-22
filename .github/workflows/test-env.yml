@@ -2,13 +2,21 @@ name: Test Environment
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
 
 jobs:
   test-env:
-    runs-on: ubuntu-latest
+    name: Test Cache Path (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest
+          - windows-2025
+          - macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -23,28 +31,64 @@ jobs:
       - name: Build with Maven
         run: mvn -B package -DskipTests
 
-      - name: Test environment variables
+      - name: Verify fallback to HOME in GitHub Actions
+        shell: bash
         run: |
-          echo "=== Environment Variables ==="
-          echo "HOME: $HOME"
-          echo "GITHUB_ACTIONS: $GITHUB_ACTIONS"
-          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
-          echo "user.home from Java: $(java -Duser.home=/root -jar target/fhir-pkg-tool.jar --help 2>&1 | head -1 || echo 'Failed')"
+          set -euo pipefail
+          home_marker="codex-home-marker"
+          user_marker="codex-user-marker"
+          home_override="$PWD/.ci-tmp/$home_marker"
+          user_override="$PWD/.ci-tmp/$user_marker"
+          mkdir -p "$home_override" "$user_override"
 
-      - name: Test tool with GitHub Actions environment
+          output="$(HOME="$home_override" GITHUB_ACTIONS=true java -Duser.home="$user_override" -jar target/fhir-pkg-tool.jar 2>&1 || true)"
+          configured="$(printf '%s\n' "$output" | sed -n 's/^  Configured output directory: //p' | head -n 1)"
+
+          if [ -z "$configured" ]; then
+            echo "Failed to parse configured output directory from tool output" >&2
+            echo "$output" >&2
+            exit 1
+          fi
+
+          echo "Configured output directory (GITHUB_ACTIONS=true): $configured"
+          if [[ "$configured" != *"$home_marker"* ]]; then
+            echo "Expected HOME fallback path segment '$home_marker' not found" >&2
+            echo "$output" >&2
+            exit 1
+          fi
+          if [[ "$configured" == *"$user_marker"* ]]; then
+            echo "Unexpected user.home path segment '$user_marker' found while fallback should use HOME" >&2
+            echo "$output" >&2
+            exit 1
+          fi
+
+      - name: Verify default path uses user.home outside GitHub fallback
+        shell: bash
         run: |
-          echo "=== Testing tool output directory ==="
-          java -jar target/fhir-pkg-tool.jar -p hl7.fhir.r4.core@4.0.1 --skip-deps
-          
-      - name: Check created directories
-        run: |
-          echo "=== Checking created directories ==="
-          find $HOME -name ".fhir" -type d 2>/dev/null || echo "No .fhir dir in HOME ($HOME)"
-          find /root -name ".fhir" -type d 2>/dev/null || echo "No .fhir dir in /root"
-          
-          if [ -d "$HOME/.fhir/packages" ]; then
-            echo "SUCCESS: Packages created in $HOME/.fhir/packages"
-            ls -la "$HOME/.fhir/packages/" | head -5
-          else
-            echo "FAILURE: No packages directory found in $HOME"
+          set -euo pipefail
+          home_marker="codex-home-marker-no-fallback"
+          user_marker="codex-user-marker-no-fallback"
+          home_override="$PWD/.ci-tmp/$home_marker"
+          user_override="$PWD/.ci-tmp/$user_marker"
+          mkdir -p "$home_override" "$user_override"
+
+          output="$(HOME="$home_override" GITHUB_ACTIONS=false java -Duser.home="$user_override" -jar target/fhir-pkg-tool.jar 2>&1 || true)"
+          configured="$(printf '%s\n' "$output" | sed -n 's/^  Configured output directory: //p' | head -n 1)"
+
+          if [ -z "$configured" ]; then
+            echo "Failed to parse configured output directory from tool output" >&2
+            echo "$output" >&2
+            exit 1
+          fi
+
+          echo "Configured output directory (GITHUB_ACTIONS=false): $configured"
+          if [[ "$configured" != *"$user_marker"* ]]; then
+            echo "Expected user.home path segment '$user_marker' not found" >&2
+            echo "$output" >&2
+            exit 1
+          fi
+          if [[ "$configured" == *"$home_marker"* ]]; then
+            echo "Unexpected HOME path segment '$home_marker' found while fallback should be disabled" >&2
+            echo "$output" >&2
+            exit 1
           fi
