@@ -1,37 +1,42 @@
 package de.gefyra.fhirpkg;
 
-import ca.uhn.fhir.context.FhirContext;
-import org.hl7.fhir.common.hapi.validation.support.CommonCodeSystemsTerminologyService;
-import ca.uhn.fhir.context.support.DefaultProfileValidationSupport;
-import ca.uhn.fhir.context.support.IValidationSupport;
-import org.hl7.fhir.common.hapi.validation.support.InMemoryTerminologyServerValidationSupport;
-import org.hl7.fhir.common.hapi.validation.support.NpmPackageValidationSupport;
-import org.hl7.fhir.common.hapi.validation.support.PrePopulatedValidationSupport;
-import org.hl7.fhir.common.hapi.validation.support.SnapshotGeneratingValidationSupport;
-import org.hl7.fhir.common.hapi.validation.support.ValidationSupportChain;
-import ca.uhn.fhir.context.support.ValidationSupportContext;
-import org.hl7.fhir.instance.model.api.IBaseResource;
+import de.gefyra.fhirpkg.cache.CacheSafety;
+import de.gefyra.fhirpkg.cache.PackageLoadingSupport;
+import de.gefyra.fhirpkg.common.ExceptionSummary;
+import de.gefyra.fhirpkg.deps.CoordinateSelector;
+import de.gefyra.fhirpkg.deps.DependencyInputParser;
+import de.gefyra.fhirpkg.deps.KnownProblematicPackages;
+import de.gefyra.fhirpkg.json.JsonFieldExtractor;
+import de.gefyra.fhirpkg.snapshot.SnapshotSupport;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.Collection;
+import java.util.concurrent.Callable;
+import java.util.regex.Pattern;
 import org.hl7.fhir.utilities.npm.FilesystemPackageCacheManager;
 import org.hl7.fhir.utilities.npm.IPackageCacheManager;
 import org.hl7.fhir.utilities.npm.NpmPackage;
 import org.hl7.fhir.utilities.npm.PackageServer;
-import org.yaml.snakeyaml.Yaml;
-import org.yaml.snakeyaml.LoaderOptions;
-import org.yaml.snakeyaml.constructor.SafeConstructor;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.file.*;
-import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.regex.Pattern;
-
 /**
- * CLI tool that downloads FHIR NPM packages, resolves dependencies, generates StructureDefinition snapshots,
- * and writes them as JSON files.
+ * CLI tool that downloads FHIR NPM packages, resolves dependencies, generates StructureDefinition
+ * snapshots, and writes them as JSON files.
  */
 @Command(
     name = "fhir-pkg-tool",
@@ -41,633 +46,514 @@ import java.util.regex.Pattern;
 )
 public class FhirPackageSnapshotTool implements Callable<Integer> {
 
-    @Option(names = {"-p", "--package"},
-            description = "FHIR NPM packages (repeatable or comma-separated; e.g. hl7.fhir.r4.core@4.0.1,hl7.fhir.us.core@6.1.0)")
-    List<String> pkgCoordinates = new ArrayList<>();
+  // Look for a top-level field named "snapshot"; avoid '{' to sidestep JDK21 preview parsing issues.
+  private static final Pattern SNAPSHOT_FIELD = Pattern.compile("\\\"snapshot\\\"\\s*:",
+      Pattern.DOTALL);
 
-    @Option(names = {"--sushi-deps-str"}, description = "YAML block (as string) from sushi-config.yaml with 'dependencies:'")
-    String sushiDepsStr;
+  @Option(names = {"-p", "--package"},
+      description = "FHIR NPM packages (repeatable or comma-separated; e.g. hl7.fhir.r4.core@4.0.1,hl7.fhir.us.core@6.1.0)")
+  List<String> pkgCoordinates = new ArrayList<>();
 
-    @Option(names = {"--sushi-deps-file"}, description = "Path to sushi-config.yaml (or a file containing the YAML dependencies)")
-    Path sushiDepsFile;
+  @Option(names = {
+      "--sushi-deps-str"}, description = "YAML block (as string) from sushi-config.yaml with 'dependencies:'")
+  String sushiDepsStr;
 
-    public static Path defaultOutputDir() {
-        return defaultCacheDir();
+  @Option(names = {
+      "--sushi-deps-file"}, description = "Path to sushi-config.yaml (or a file containing the YAML dependencies)")
+  Path sushiDepsFile;
+
+  @Option(names = {
+      "--package-json-file"}, description = "Path to package.json (only 'dependencies' are read; 'devDependencies' are ignored)")
+  Path packageJsonFile;
+
+  public static Path defaultOutputDir() {
+    return defaultCacheDir();
+  }
+
+  @Option(names = {"-o",
+      "--out"}, description = "Output directory for StructureDefinitions (default: ~/.fhir/packages; Windows: C:\\Users\\<USER>\\.fhir\\packages)")
+  Path outDir = defaultOutputDir();
+
+  public static Path defaultCacheDir() {
+    String githubActions = System.getenv("GITHUB_ACTIONS");
+    if ("true".equals(githubActions)) {
+      String home = System.getenv("HOME");
+      if (home != null && !home.isBlank()) {
+        return Paths.get(home, ".fhir", "packages");
+      }
+    }
+    return Paths.get(System.getProperty("user.home"), ".fhir", "packages");
+  }
+
+  @Option(names = {
+      "--registry"}, description = "Package registry (default: https://packages.fhir.org)")
+  String registryUrl = "https://packages.fhir.org";
+
+  @Option(names = {"--skip-deps"}, description = "Do NOT automatically load dependencies")
+  boolean skipDependencies = false;
+
+  @Option(names = {"--overwrite"}, description = "Overwrite existing files")
+  boolean overwrite = false;
+
+  @Option(names = {"--pretty"}, description = "Pretty-print JSON")
+  boolean pretty = true;
+
+  @Option(names = {
+      "--force-snapshot"}, description = "Always (re)generate snapshots, even if present")
+  boolean forceSnapshot = false;
+
+  @Option(names = {
+      "--profiles-dir"}, description = "Directory with local StructureDefinition JSONs (processed recursively)")
+  Path profilesDir;
+
+  @Option(names = {
+      "--repair-lock-files"}, description = "Delete '*.lock' files in effective cache directory before package loading")
+  boolean repairLockFiles = false;
+
+  @Option(names = {"--debug"}, description = "Print stack traces for execution errors")
+  boolean debug = false;
+
+  public static void main(String[] args) {
+    System.out.println("FHIR Package Tool starting...");
+    if (!hasDebugFlag(args)) {
+      System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "error");
+    }
+    FhirPackageSnapshotTool tool = new FhirPackageSnapshotTool();
+    CommandLine commandLine = new CommandLine(tool);
+    commandLine.setExecutionExceptionHandler((ex, cmd, parseResult) -> {
+      System.err.printf(Locale.ROOT, "Error: %s%n", summarizeException(ex));
+      if (tool.debug) {
+        ex.printStackTrace(System.err);
+      }
+      return 1;
+    });
+    int exit = commandLine.execute(args);
+    System.exit(exit);
+  }
+
+  static boolean hasDebugFlag(String[] args) {
+    if (args == null || args.length == 0) {
+      return false;
+    }
+    for (String arg : args) {
+      if ("--debug".equals(arg)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  @Override
+  public Integer call() throws Exception {
+    Path effectiveOutDir = outDir.toAbsolutePath().normalize();
+    Path effectiveCacheDir = effectiveOutDir;
+
+    printConfiguration(effectiveOutDir, effectiveCacheDir);
+
+    int cacheSafetyExitCode = validateCacheSafetyIfNeeded(effectiveCacheDir);
+    if (cacheSafetyExitCode != 0) {
+      return cacheSafetyExitCode;
     }
 
-    @Option(names = {"-o", "--out"}, description = "Output directory for StructureDefinitions (default: ~/.fhir/packages; Windows: C:\\Users\\<USER>\\.fhir\\packages)")
-    Path outDir = defaultOutputDir();
+    Files.createDirectories(effectiveOutDir);
 
-    @Option(names = {"--cache"}, description = "Local cache folder for NPM packages (default: ~/.fhir/packages)")
-    Path cacheDir = defaultCacheDir();
+    Set<String> requested = collectRequestedCoordinates();
+    List<String> resolvedRequested = selectLatestCoordinatesByPackageId(requested);
+    printRequestedPackages(resolvedRequested);
 
-    public static Path defaultCacheDir() {
-        // Check if we're in GitHub Actions
-        String githubActions = System.getenv("GITHUB_ACTIONS");
-        if ("true".equals(githubActions)) {
-            // In GitHub Actions, use HOME env var instead of user.home property
-            String home = System.getenv("HOME");
-            if (home != null && !home.isBlank()) {
-                return Paths.get(home, ".fhir", "packages");
-            }
-        }
-        
-        return Paths.get(System.getProperty("user.home"), ".fhir", "packages");
-    }
+    Optional<String> sushiFhirVersion = DependencyInputParser.gatherFhirVersionFromSushi(
+        sushiDepsFile, sushiDepsStr);
 
-    @Option(names = {"--registry"}, description = "Package registry (default: https://packages.fhir.org)")
-    String registryUrl = "https://packages.fhir.org";
-
-    @Option(names = {"--skip-deps"}, description = "Do NOT automatically load dependencies")
-    boolean skipDependencies = false;
-
-    @Option(names = {"--overwrite"}, description = "Overwrite existing files")
-    boolean overwrite = false;
-
-    @Option(names = {"--pretty"}, description = "Pretty-print JSON")
-    boolean pretty = true;
-
-    @Option(names = {"--force-snapshot"}, description = "Always (re)generate snapshots, even if present")
-    boolean forceSnapshot = false;
-
-    @Option(names = {"--profiles-dir"}, description = "Directory with local StructureDefinition JSONs (processed recursively)")
-    Path profilesDir;
-
-    public static void main(String[] args) {
-        System.out.println("FHIR Package Tool starting...");
-        int exit = new CommandLine(new FhirPackageSnapshotTool()).execute(args);
-        System.exit(exit);
-    }
-
-    @Override
-    public Integer call() throws Exception {
-        // Debug output: Show which directories will be used
-        System.out.println("FHIR Package Tool Configuration:");
-        System.out.println("  Output directory: " + outDir.toAbsolutePath());
-        System.out.println("  Cache directory: " + cacheDir.toAbsolutePath());
-        
-        // Show how directories were determined
-        String githubActions = System.getenv("GITHUB_ACTIONS");
-        if ("true".equals(githubActions)) {
-            System.out.println("  GitHub Actions detected (GITHUB_ACTIONS=true)");
-            System.out.println("  HOME environment variable: " + System.getenv("HOME"));
-            System.out.println("  user.home system property: " + System.getProperty("user.home"));
-        } else {
-            System.out.println("  Running in local environment");
-        }
-        System.out.println();
-        
-        Files.createDirectories(outDir);
-
-        // 1) Collect package coordinates: -p (comma-separated is fine), Sushi file, Sushi inline string
-        Set<String> requested = new LinkedHashSet<>();
-        if (pkgCoordinates != null) {
-            for (String s : pkgCoordinates) {
-                if (s == null) continue;
-                Arrays.stream(s.split(","))
-                        .map(String::trim)
-                        .filter(x -> !x.isBlank())
-                        .forEach(requested::add);
-            }
-        }
-        List<String> sushiPackages = gatherPkgCoordsFromSushi(sushiDepsFile, sushiDepsStr);
-        requested.addAll(sushiPackages);
-        
-        // Debug: Show all requested packages
-        if (!requested.isEmpty()) {
-            System.out.println("Requested packages:");
-            for (String pkg : requested) {
-                System.out.println("  - " + pkg);
-            }
-        }
-
-        Optional<String> sushiFhirVersion = gatherFhirVersionFromSushi(sushiDepsFile);
-
-        // If only sushi-config is provided but no dependencies found, that's OK - just skip package installation
-        if (requested.isEmpty() && profilesDir == null) {
-            if (sushiDepsFile != null || sushiDepsStr != null) {
-                System.out.println("No dependencies found in sushi-config, skipping package installation.");
-                return 0;
-            }
-            System.err.println("No packages specified. Use -p or --sushi-deps-* (or provide --profiles-dir). Aborting.");
-            return 2;
-        }
-
-        // 2) Configure package cache/registry
-        // FilesystemPackageCacheManager in utilities 6.6.6 uses a Builder API
-        Files.createDirectories(cacheDir);
-        Set<Path> knownCacheDirs = initKnownCacheDirs(cacheDir);
-        FilesystemPackageCacheManager.Builder cacheBuilder = new FilesystemPackageCacheManager.Builder()
-                .withCacheFolder(cacheDir.toString())
-                .withPackageServers(List.of(new PackageServer(registryUrl)));
-        IPackageCacheManager cache = cacheBuilder.build();
-
-        // 3) Load root packages (avoid duplicates by name)
-        List<NpmPackage> allPkgs = new ArrayList<>();
-        Set<String> seenByName = new HashSet<>();
-        for (String coord : requested) {
-            // Replace problematic version: hl7.fhir.extensions.r5@4.0.1 with latest
-            if (coord.equals("hl7.fhir.extensions.r5@4.0.1")) {
-                System.out.printf(Locale.ROOT, "Skipping known problematic package: %s%n", coord);
-                continue;
-            }
-            
-            NpmPackage p = loadPackage(cache, coord, knownCacheDirs);
-            if (seenByName.add(p.name())) {
-                allPkgs.add(p);
-            }
-        }
-
-        // 4) Resolve dependencies transitively (unless --skip-deps)
-        if (!skipDependencies) {
-            for (int i = 0; i < allPkgs.size(); i++) {
-                NpmPackage root = allPkgs.get(i);
-                List<NpmPackage> deps = loadAllDependencies(cache, root, seenByName, knownCacheDirs);
-                allPkgs.addAll(deps);
-            }
-        }
-
-        if (allPkgs.isEmpty()) {
-            if (profilesDir == null) {
-                System.err.println("No packages loaded – aborting.");
-                return 3;
-            }
-            System.out.println("No FHIR packages loaded; continuing with local profiles only.");
-        }
-
-        // 5) Choose FHIR context: prefer sushi-config value when provided, otherwise fallback to packages/default
-        FhirContext ctx;
-        if (sushiFhirVersion.isPresent()) {
-            ctx = pickFhirContext(sushiFhirVersion.get());
-        } else if (!allPkgs.isEmpty()) {
-            ctx = pickFhirContext(allPkgs.get(0));
-        } else {
-            System.err.println("No FHIR version available; defaulting to R5 context.");
-            ctx = pickFhirContext((String) null);
-        }
-
-        // 6) Build ValidationSupport chain
-        IValidationSupport chain = buildValidationChain(ctx, allPkgs);
-
-        // 7) If no --profiles-dir: copy packages and snapshot their StructureDefinitions
-        //    If --profiles-dir is present: skip package output entirely (local-only output)
-        int generated = 0, total = 0, sdWritten = 0, filesCopied = 0;
-        boolean outIsCache = outDir.toAbsolutePath().normalize().equals(cacheDir.toAbsolutePath().normalize());
-        if (outIsCache) {
-            System.out.println("Output directory equals cache directory - will only update StructureDefinition snapshots in-place");
-        }
-        
-        if (profilesDir == null) {
-            for (NpmPackage p : allPkgs) {
-                String pkgFolderName = p.name() + "#" + p.version();
-                Path pkgOutDir = outDir.resolve(pkgFolderName);
-                
-                // 7a) Copy all folders/files - SKIP if output equals cache to avoid corrupting cache
-                if (!outIsCache) {
-                    var folders = p.getFolders();
-                    for (Map.Entry<String, org.hl7.fhir.utilities.npm.NpmPackage.NpmPackageFolder> e : folders.entrySet()) {
-                        String folderName = e.getKey();
-                        var folder = e.getValue();
-                        Path folderOut = pkgOutDir.resolve(folderName);
-                        Files.createDirectories(folderOut);
-                        for (String fname : folder.listFiles()) {
-                            Path target = folderOut.resolve(fname);
-                            if (!overwrite && Files.exists(target)) {
-                                continue;
-                            }
-                            try (InputStream is = p.load(folderName, fname)) {
-                                if (is == null) continue;
-                                byte[] bytes = is.readAllBytes();
-                                Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-                                filesCopied++;
-                            }
-                        }
-                    }
-                }
-
-                // 7b) Snapshot StructureDefinitions and overwrite copied files when a new snapshot was generated
-                for (String resName : p.listResources("StructureDefinition")) {
-                    total++;
-                    try (InputStream is = p.load("package", resName)) {
-                        if (is == null) continue;
-                        String json = new String(is.readAllBytes());
-
-                        boolean hasSnapshot = SNAPSHOT_FIELD.matcher(json).find();
-                        boolean didGenerate = forceSnapshot || !hasSnapshot;
-                        if (didGenerate) {
-                            SnapshotGeneratingValidationSupport snap = new SnapshotGeneratingValidationSupport(ctx);
-                            ValidationSupportContext vsc = new ValidationSupportContext(chain);
-                            IBaseResource parsed = ctx.newJsonParser().parseResource(json);
-                            IBaseResource withSnap = snap.generateSnapshot(vsc, parsed, getUrlFromJson(json), null, getNameFromJson(json));
-                            json = pretty
-                                    ? ctx.newJsonParser().setPrettyPrint(true).encodeResourceToString(withSnap)
-                                    : ctx.newJsonParser().encodeResourceToString(withSnap);
-                            generated++;
-                        }
-
-                        Path target = pkgOutDir.resolve("package").resolve(resName);
-                        // Write if we generated a new snapshot, regardless of existing file; otherwise honor overwrite flag
-                        if (!didGenerate && !overwrite && Files.exists(target)) {
-                            continue;
-                        }
-                        Files.createDirectories(target.getParent());
-                        Files.writeString(target, json, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-                        sdWritten++;
-                    }
-                }
-            }
-        }
-
-        // 8) Optionally: process local profiles from --profiles-dir
-        int localTotal = 0, localGenerated = 0, localWritten = 0;
-        if (profilesDir != null) {
-            if (!Files.exists(profilesDir) || !Files.isDirectory(profilesDir)) {
-                System.err.printf(Locale.ROOT, "Profiles directory not found or not a directory: %s%n", profilesDir);
-            } else {
-                Path localOutBase = outDir.resolve("local");
-                SnapshotGeneratingValidationSupport snap = new SnapshotGeneratingValidationSupport(ctx);
-
-                // Build a local support layer with all local resources so cross-references resolve (bases, extensions)
-                NpmPackageValidationSupport localSupport = new NpmPackageValidationSupport(ctx);
-                var parser = ctx.newJsonParser();
-                parser.setParserErrorHandler(new ca.uhn.fhir.parser.LenientErrorHandler(false));
-
-                // First pass: load all JSON resources from the folder into localSupport
-                try (var stream = Files.find(profilesDir, Integer.MAX_VALUE,
-                        (path, attrs) -> !attrs.isDirectory()
-                                && path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))) {
-                    for (Path f : (Iterable<Path>) stream::iterator) {
-                        try {
-                            String input = Files.readString(f);
-                            // parse and add any FHIR resource present; failures are non-fatal
-                            IBaseResource res = parser.parseResource(input);
-                            if (res != null) {
-                                localSupport.addResource(res);
-                            }
-                        } catch (Exception e) {
-                            System.err.printf(Locale.ROOT, "Skip (load into support) failed: %s (%s)%n", f, e.getMessage());
-                        }
-                    }
-                }
-
-                // Use a chain that prefers local resources first, then the package chain
-                IValidationSupport localChain = new ValidationSupportChain(localSupport, chain);
-                ValidationSupportContext vsc = new ValidationSupportContext(localChain);
-
-                try (var stream = Files.find(profilesDir, Integer.MAX_VALUE,
-                        (path, attrs) -> !attrs.isDirectory()
-                                && path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))) {
-                    for (Path f : (Iterable<Path>) stream::iterator) {
-
-                        String json;
-                        try {
-                            json = Files.readString(f);
-                        } catch (Exception e) {
-                            System.err.printf(Locale.ROOT, "Skip unreadable file: %s (%s)%n", f, e.getMessage());
-                            continue;
-                        }
-
-                        // Only handle StructureDefinition resources
-                        String rt = extractJsonString(json, "resourceType");
-                        if (rt == null || !"StructureDefinition".equals(rt)) continue;
-                        localTotal++;
-
-                        boolean hasSnapshot = SNAPSHOT_FIELD.matcher(json).find();
-                        boolean didGenerate = forceSnapshot || !hasSnapshot;
-                        if (didGenerate) {
-                            try {
-                                IBaseResource parsedRes = parser.parseResource(json);
-                                IBaseResource withSnap = snap.generateSnapshot(vsc, parsedRes, getUrlFromJson(json), null, getNameFromJson(json));
-                                json = pretty
-                                        ? ctx.newJsonParser().setPrettyPrint(true).encodeResourceToString(withSnap)
-                                        : ctx.newJsonParser().encodeResourceToString(withSnap);
-                                localGenerated++;
-                            } catch (Exception e) {
-                                System.err.printf(Locale.ROOT, "Snapshot generation failed for %s: %s%n", f, e.getMessage());
-                                continue;
-                            }
-                        }
-
-                        // mirror relative path under out/local
-                        Path rel = profilesDir.relativize(f);
-                        Path target = localOutBase.resolve(rel);
-                        try {
-                            if (!didGenerate && !overwrite && Files.exists(target)) {
-                                continue;
-                            }
-                            Files.createDirectories(target.getParent());
-                            Files.writeString(target, json, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-                            localWritten++;
-                        } catch (Exception e) {
-                            System.err.printf(Locale.ROOT, "Write failed for %s: %s%n", target, e.getMessage());
-                        }
-                    }
-                }
-            }
-        }
-
-        System.out.printf(Locale.ROOT,
-                "Done: %d SDs found, %d snapshots generated, %d SD files written, %d files copied. Local: %d SDs, %d generated, %d written.%n",
-                total, generated, sdWritten, filesCopied, localTotal, localGenerated, localWritten);
-        System.out.printf(Locale.ROOT,
-                "Output directory: %s%n", outDir.toAbsolutePath());
-        System.out.printf(Locale.ROOT,
-                "Cache directory: %s%n", cacheDir.toAbsolutePath());
-
+    if (resolvedRequested.isEmpty() && profilesDir == null) {
+      if (sushiDepsFile != null || sushiDepsStr != null || packageJsonFile != null) {
+        System.out.println(
+            "No dependencies found in provided dependency sources, skipping package installation.");
         return 0;
+      }
+      System.err.println(
+          "No packages specified. Use -p, --sushi-deps-*, or --package-json-file (or provide --profiles-dir). Aborting.");
+      return 2;
     }
 
-    // Look for a top-level field named "snapshot"; avoid '{' to sidestep JDK21 preview parsing issues
-    private static final Pattern SNAPSHOT_FIELD = Pattern.compile("\\\"snapshot\\\"\\s*:", Pattern.DOTALL);
+    Files.createDirectories(effectiveCacheDir);
+    IPackageCacheManager cache = buildCache(effectiveCacheDir);
+    Set<Path> knownCacheDirs = PackageLoadingSupport.initKnownCacheDirs(effectiveCacheDir);
 
-    private static NpmPackage loadPackage(IPackageCacheManager cache,
-                                          String coordinate,
-                                          Set<Path> knownCacheDirs) throws IOException {
-        String name = coordinate;
-        String version = null;
-        if (coordinate.contains("@")) {
-            String[] parts = coordinate.split("@", 2);
-            name = parts[0];
-            version = parts[1];
+    List<NpmPackage> allPkgs = loadRequestedAndDependencyPackages(cache, resolvedRequested,
+        knownCacheDirs);
+    if (allPkgs.isEmpty()) {
+      if (profilesDir == null) {
+        System.err.println("No packages loaded – aborting.");
+        return 3;
+      }
+      System.out.println("No FHIR packages loaded; continuing with local profiles only.");
+    }
+
+    String selectedFhirVersion = selectFhirVersion(sushiFhirVersion, allPkgs);
+    SnapshotSupport.FhirRelease release = SnapshotSupport.resolveFhirRelease(selectedFhirVersion);
+    SnapshotSupport.SnapshotEngine snapshotEngine = SnapshotSupport.createSnapshotEngine(release,
+        allPkgs);
+
+    PackageStats packageStats = new PackageStats();
+    if (profilesDir == null) {
+      packageStats = processPackageOutputs(allPkgs, effectiveOutDir, snapshotEngine);
+    }
+
+    LocalStats localStats = processLocalProfiles(snapshotEngine, effectiveOutDir);
+
+    System.out.printf(Locale.ROOT,
+        "Done: %d SDs found, %d snapshots generated, %d SD files written, %d files copied. Local: %d SDs, %d generated, %d written.%n",
+        packageStats.total, packageStats.generated, packageStats.sdWritten, packageStats.filesCopied,
+        localStats.total, localStats.generated, localStats.written);
+    System.out.printf(Locale.ROOT, "Output directory: %s%n", effectiveOutDir);
+    System.out.printf(Locale.ROOT, "Cache directory: %s%n", effectiveCacheDir);
+    return 0;
+  }
+
+  private void printConfiguration(Path effectiveOutDir, Path effectiveCacheDir) {
+    boolean defaultPath = shouldValidateDefaultCacheSafety(effectiveCacheDir);
+    System.out.println("FHIR Package Tool Configuration:");
+    System.out.println("  Configured output directory: " + outDir.toAbsolutePath().normalize());
+    System.out.println("  Effective output directory: " + effectiveOutDir);
+    System.out.println("  Effective cache directory: " + effectiveCacheDir);
+    System.out.println(
+        "  Cache safety checks: enabled" + (defaultPath ? " (default cache path)" : " (--out path)")
+    );
+
+    String githubActions = System.getenv("GITHUB_ACTIONS");
+    if ("true".equals(githubActions)) {
+      System.out.println("  GitHub Actions detected (GITHUB_ACTIONS=true)");
+      System.out.println("  HOME environment variable: " + System.getenv("HOME"));
+      System.out.println("  user.home system property: " + System.getProperty("user.home"));
+    } else {
+      System.out.println("  Running in local environment");
+    }
+    System.out.println();
+  }
+
+  private int validateCacheSafetyIfNeeded(Path effectiveCacheDir) {
+    Optional<String> cacheVersion;
+    try {
+      cacheVersion = CacheSafety.readCacheVersionFromCacheIni(effectiveCacheDir);
+    } catch (IOException e) {
+      System.err.printf(Locale.ROOT, "Error: Unable to read cache metadata from %s (%s). Aborting.%n",
+          effectiveCacheDir.resolve("packages.ini"), e.getMessage());
+      return 4;
+    }
+    if (cacheVersion.isPresent()) {
+      String detectedVersion = cacheVersion.get();
+      if (!isSupportedCacheVersion(detectedVersion)) {
+        System.err.printf(Locale.ROOT,
+            "Error: Unsupported cache metadata version '%s' in packages.ini. Expected '%s'. Aborting.%n",
+            detectedVersion, CacheSafety.expectedCacheMetadataVersion());
+        return 4;
+      }
+      System.out.println("Detected cache metadata version in packages.ini: " + detectedVersion);
+    } else if (Files.exists(effectiveCacheDir.resolve("packages.ini"))) {
+      System.err.println(
+          "Error: packages.ini found but [cache]/version could not be parsed. Aborting to avoid unsafe cache operations.");
+      return 4;
+    }
+
+    List<Path> lockFiles;
+    try {
+      lockFiles = CacheSafety.findLockFiles(effectiveCacheDir);
+    } catch (IOException e) {
+      System.err.printf(Locale.ROOT, "Error: Failed to list lock files in %s (%s). Aborting.%n",
+          effectiveCacheDir, e.getMessage());
+      return 5;
+    }
+    if (lockFiles.isEmpty()) {
+      return 0;
+    }
+    System.err.printf(Locale.ROOT, "Error: Found %d .lock file(s) in cache.%n", lockFiles.size());
+    if (!repairLockFiles) {
+      System.err.println("Hint: rerun with --repair-lock-files to remove stale lock files.");
+      return 5;
+    }
+    try {
+      int deleted = CacheSafety.deleteLockFiles(lockFiles);
+      System.out.printf(Locale.ROOT, "Repair: deleted %d .lock file(s).%n", deleted);
+      List<Path> remainingLocks = CacheSafety.findLockFiles(effectiveCacheDir);
+      if (!remainingLocks.isEmpty()) {
+        System.err.printf(Locale.ROOT, "Error: %d .lock file(s) remain after repair. Aborting.%n",
+            remainingLocks.size());
+        return 5;
+      }
+      return 0;
+    } catch (IOException e) {
+      System.err.printf(Locale.ROOT, "Error: Failed to delete lock files (%s). Aborting.%n",
+          e.getMessage());
+      return 5;
+    }
+  }
+
+  private Set<String> collectRequestedCoordinates() throws IOException {
+    Set<String> requested = new LinkedHashSet<>();
+    if (pkgCoordinates != null) {
+      for (String s : pkgCoordinates) {
+        if (s == null) {
+          continue;
         }
-        NpmPackage pkg = (version == null || version.isBlank())
-                ? cache.loadPackage(name)
-                : cache.loadPackage(name, version);
-        notePackageCacheLocation(pkg, knownCacheDirs);
-        return pkg;
+        Arrays.stream(s.split(","))
+            .map(String::trim)
+            .filter(x -> !x.isBlank())
+            .forEach(requested::add);
+      }
+    }
+    requested.addAll(DependencyInputParser.gatherPkgCoordsFromSushi(sushiDepsFile, sushiDepsStr));
+    requested.addAll(DependencyInputParser.gatherPkgCoordsFromPackageJson(packageJsonFile));
+    return requested;
+  }
+
+  private void printRequestedPackages(List<String> resolvedRequested) {
+    if (resolvedRequested.isEmpty()) {
+      return;
+    }
+    System.out.println("Requested packages:");
+    for (String pkg : resolvedRequested) {
+      System.out.println("  - " + pkg);
+    }
+  }
+
+  private IPackageCacheManager buildCache(Path effectiveCacheDir) throws Exception {
+    FilesystemPackageCacheManager.Builder cacheBuilder = new FilesystemPackageCacheManager.Builder()
+        .withCacheFolder(effectiveCacheDir.toString())
+        .withPackageServers(List.of(new PackageServer(registryUrl)));
+    return cacheBuilder.build();
+  }
+
+  List<NpmPackage> loadRequestedAndDependencyPackages(IPackageCacheManager cache,
+      List<String> resolvedRequested, Set<Path> knownCacheDirs) {
+    List<NpmPackage> allPkgs = new ArrayList<>();
+    Set<String> seenByName = new HashSet<>();
+    for (String coord : resolvedRequested) {
+      if (KnownProblematicPackages.isKnownProblematicCoordinate(coord)) {
+        KnownProblematicPackages.logSkippingKnownProblematicPackage("requested packages", coord);
+        continue;
+      }
+      try {
+        NpmPackage p = PackageLoadingSupport.loadPackage(cache, coord, knownCacheDirs);
+        if (seenByName.add(p.name())) {
+          allPkgs.add(p);
+        }
+      } catch (Exception e) {
+        System.err.printf(Locale.ROOT, "Failed to install requested package %s (%s). Continuing.%n",
+            coord, summarizeException(e));
+      }
     }
 
-    private static List<NpmPackage> loadAllDependencies(IPackageCacheManager cache,
-                                                        NpmPackage root,
-                                                        Set<String> seenByName,
-                                                        Set<Path> knownCacheDirs) throws IOException {
-        List<String> deps = root.dependencies(); // e.g., entries like "package.id#1.2.3"
-        if (deps == null || deps.isEmpty()) return List.of();
+    if (!skipDependencies) {
+      for (int i = 0; i < allPkgs.size(); i++) {
+        NpmPackage root = allPkgs.get(i);
+        List<NpmPackage> deps = PackageLoadingSupport.loadAllDependencies(cache, root, seenByName,
+            knownCacheDirs);
+        allPkgs.addAll(deps);
+      }
+    }
+    return allPkgs;
+  }
 
-        List<NpmPackage> out = new ArrayList<>();
-        for (String entry : deps) {
-            String name = entry;
-            String version = null;
-            int hashIdx = entry.indexOf('#');
-            if (hashIdx >= 0) {
-                name = entry.substring(0, hashIdx);
-                version = entry.substring(hashIdx + 1);
+  private String selectFhirVersion(Optional<String> sushiFhirVersion, List<NpmPackage> allPkgs) {
+    if (sushiFhirVersion.isPresent()) {
+      return sushiFhirVersion.get();
+    }
+    if (!allPkgs.isEmpty()) {
+      return allPkgs.get(0).fhirVersion();
+    }
+    System.err.println("No FHIR version available; defaulting to R5 context.");
+    return null;
+  }
+
+  private PackageStats processPackageOutputs(List<NpmPackage> allPkgs, Path effectiveOutDir,
+      SnapshotSupport.SnapshotEngine snapshotEngine) throws Exception {
+    PackageStats stats = new PackageStats();
+    for (NpmPackage p : allPkgs) {
+      String pkgFolderName = p.name() + "#" + p.version();
+      Path pkgOutDir = effectiveOutDir.resolve(pkgFolderName);
+
+      for (Map.Entry<String, NpmPackage.NpmPackageFolder> entry : p.getFolders().entrySet()) {
+        String folderName = entry.getKey();
+        NpmPackage.NpmPackageFolder folder = entry.getValue();
+        Path folderOut = pkgOutDir.resolve(folderName);
+        Files.createDirectories(folderOut);
+        for (String fname : folder.listFiles()) {
+          Path target = folderOut.resolve(fname);
+          if (!overwrite && Files.exists(target)) {
+            continue;
+          }
+          try (InputStream is = p.load(folderName, fname)) {
+            if (is == null) {
+              continue;
             }
+            byte[] bytes = is.readAllBytes();
+            Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            stats.filesCopied++;
+          }
+        }
+      }
 
-            // Skip problematic package: hl7.fhir.extensions.r5#4.0.1
-            if ("hl7.fhir.extensions.r5".equals(name) && "4.0.1".equals(version)) {
-                System.out.printf(Locale.ROOT, "Skipping known problematic package: %s#%s%n", name, version);
-                continue;
+      for (String resName : p.listResources("StructureDefinition")) {
+        stats.total++;
+        try (InputStream is = p.load("package", resName)) {
+          if (is == null) {
+            continue;
+          }
+          String json = new String(is.readAllBytes());
+          JsonFieldExtractor.ProfileFields profileFields = JsonFieldExtractor.extractProfileFields(
+              json);
+
+          boolean hasSnapshot = SNAPSHOT_FIELD.matcher(json).find();
+          boolean didGenerate = forceSnapshot || !hasSnapshot;
+          if (didGenerate) {
+            json = snapshotEngine.generateSnapshot(json, pretty,
+                profileFields.url(), profileFields.name());
+            stats.generated++;
+            if (debug) {
+              System.out.printf(Locale.ROOT, "Generated snapshot: %s#%s/%s%n", p.name(), p.version(),
+                  resName);
             }
+          }
 
-            if (!seenByName.add(name)) continue; // already loaded
-
-            NpmPackage p = (version == null || version.isBlank())
-                    ? cache.loadPackage(name)
-                    : cache.loadPackage(name, version);
-            notePackageCacheLocation(p, knownCacheDirs);
-            out.add(p);
-            out.addAll(loadAllDependencies(cache, p, seenByName, knownCacheDirs));
+          Path target = pkgOutDir.resolve("package").resolve(resName);
+          if (!didGenerate && !overwrite && Files.exists(target)) {
+            continue;
+          }
+          Files.createDirectories(target.getParent());
+          Files.writeString(target, json, StandardOpenOption.CREATE,
+              StandardOpenOption.TRUNCATE_EXISTING);
+          stats.sdWritten++;
         }
-        return out;
+      }
+    }
+    return stats;
+  }
+
+  private LocalStats processLocalProfiles(SnapshotSupport.SnapshotEngine snapshotEngine,
+      Path effectiveOutDir) throws IOException {
+    LocalStats stats = new LocalStats();
+    if (profilesDir == null) {
+      return stats;
+    }
+    if (!Files.exists(profilesDir) || !Files.isDirectory(profilesDir)) {
+      System.err.printf(Locale.ROOT, "Profiles directory not found or not a directory: %s%n",
+          profilesDir);
+      return stats;
     }
 
-    private static FhirContext pickFhirContext(NpmPackage pkg) {
-        return pickFhirContext(pkg.fhirVersion());
-    }
+    Path localOutBase = effectiveOutDir.resolve("local");
 
-    private static FhirContext pickFhirContext(String version) {
-        String fhirVer = Optional.ofNullable(version).orElse("").toLowerCase(Locale.ROOT);
-        if (fhirVer.startsWith("5")) {
-            return FhirContext.forR5Cached();
-        } else if (fhirVer.startsWith("4.3")) {
-            return FhirContext.forR4BCached();
-        } else if (fhirVer.startsWith("4")) {
-            return FhirContext.forR4Cached();
-        } else if (fhirVer.startsWith("3")) {
-            return FhirContext.forDstu3Cached();
-        }
-        return FhirContext.forR5Cached();
-    }
-
-    private static IValidationSupport buildValidationChain(FhirContext ctx, List<NpmPackage> pkgs) {
-        DefaultProfileValidationSupport defaultSupport = new DefaultProfileValidationSupport(ctx);
-        NpmPackageValidationSupport npmSupport = new NpmPackageValidationSupport(ctx);
-        // Load resources and binaries from each NpmPackage into the npmSupport
-        for (NpmPackage p : pkgs) {
-            try {
-                // For snapshot generation, StructureDefinitions are sufficient
-                for (String type : List.of("StructureDefinition")) {
-                    for (String resName : p.listResources(type)) {
-                        try (InputStream is = p.load("package", resName)) {
-                            if (is == null) continue;
-                            String input = new String(is.readAllBytes());
-                            var parser = ctx.newJsonParser();
-                            parser.setParserErrorHandler(new ca.uhn.fhir.parser.LenientErrorHandler(false));
-                            IBaseResource resource = parser.parseResource(input);
-                            npmSupport.addResource(resource);
-                        }
-                    }
-                }
-                for (String binaryName : p.list("other")) {
-                    try (InputStream bin = p.load("other", binaryName)) {
-                        byte[] bytes = bin.readAllBytes();
-                        npmSupport.addBinary(bytes, binaryName);
-                    }
-                }
-            } catch (Exception e) {
-                throw new RuntimeException("Failed loading package resources: " + p.name() + "#" + p.version(), e);
-            }
-        }
-        InMemoryTerminologyServerValidationSupport inMemTerm = new InMemoryTerminologyServerValidationSupport(ctx);
-        CommonCodeSystemsTerminologyService commonTerminology = new CommonCodeSystemsTerminologyService(ctx);
-        PrePopulatedValidationSupport prepop = new PrePopulatedValidationSupport(ctx);
-        return new ValidationSupportChain(
-                defaultSupport,
-                npmSupport,
-                prepop,
-                commonTerminology,
-                inMemTerm
-        );
-    }
-
-    private static Set<Path> initKnownCacheDirs(Path cacheDir) {
-        Set<Path> known = new HashSet<>();
-        if (cacheDir == null) {
-            return known;
-        }
+    try (var stream = Files.find(profilesDir, Integer.MAX_VALUE,
+        (path, attrs) -> !attrs.isDirectory()
+            && path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))) {
+      for (Path f : (Iterable<Path>) stream::iterator) {
         try {
-            if (Files.exists(cacheDir) && Files.isDirectory(cacheDir)) {
-                try (var stream = Files.list(cacheDir)) {
-                    for (Path entry : (Iterable<Path>) stream::iterator) {
-                        if (Files.isDirectory(entry)) {
-                            known.add(entry.toAbsolutePath().normalize());
-                        }
-                    }
-                }
-            }
-        } catch (IOException e) {
-            System.err.printf(Locale.ROOT, "Failed to scan cache directory %s: %s%n", cacheDir, e.getMessage());
-        }
-        return known;
-    }
-
-    private static void notePackageCacheLocation(NpmPackage pkg, Set<Path> knownCacheDirs) {
-        if (pkg == null || knownCacheDirs == null) {
-            return;
-        }
-        String rawPath = pkg.getPath();
-        if (rawPath == null || rawPath.isBlank()) {
-            return;
-        }
-        try {
-            Path resolved = Paths.get(rawPath).toAbsolutePath().normalize();
-            if (knownCacheDirs.add(resolved)) {
-                System.out.printf(Locale.ROOT,
-                        "Cached package %s#%s at %s%n",
-                        Optional.ofNullable(pkg.name()).orElse(""),
-                        Optional.ofNullable(pkg.version()).orElse(""),
-                        resolved);
-            }
+          String input = Files.readString(f);
+          snapshotEngine.cacheResource(input);
         } catch (Exception e) {
-            System.err.printf(Locale.ROOT,
-                    "Cached package %s#%s but resolved cache path failed: %s%n",
-                    Optional.ofNullable(pkg.name()).orElse(""),
-                    Optional.ofNullable(pkg.version()).orElse(""),
-                    e.getMessage());
+          System.err.printf(Locale.ROOT, "Skip (load into support) failed: %s (%s)%n", f,
+              e.getMessage());
         }
+      }
     }
 
-    // --- Sushi parsing ---
-    private static List<String> parseSushiDepsYaml(String yamlText) {
-        if (yamlText == null || yamlText.isBlank()) return List.of();
-        Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
-        Object root = yaml.load(yamlText);
-        if (!(root instanceof Map<?, ?> map)) return List.of();
+    try (var stream = Files.find(profilesDir, Integer.MAX_VALUE,
+        (path, attrs) -> !attrs.isDirectory()
+            && path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))) {
+      for (Path f : (Iterable<Path>) stream::iterator) {
+        String json;
+        try {
+          json = Files.readString(f);
+        } catch (Exception e) {
+          System.err.printf(Locale.ROOT, "Skip unreadable file: %s (%s)%n", f, e.getMessage());
+          continue;
+        }
 
-        // Only parse the "dependencies" section, not the entire root
-        if (!map.containsKey("dependencies")) return List.of();
-        Object depsNode = map.get("dependencies");
-        if (!(depsNode instanceof Map<?, ?> deps)) return List.of();
+        JsonFieldExtractor.ProfileFields profileFields = JsonFieldExtractor.extractProfileFields(
+            json);
+        if (!"StructureDefinition".equals(profileFields.resourceType())) {
+          continue;
+        }
+        stats.total++;
 
-        List<String> coords = new ArrayList<>();
-        for (Map.Entry<?, ?> e : deps.entrySet()) {
-            String pkgName = String.valueOf(e.getKey()).trim();
-            Object v = e.getValue();
-            String version = null;
-            if (v instanceof String s) {
-                version = s.trim();
-            } else if (v instanceof Map<?, ?> m) {
-                Object ver = m.get("version");
-                if (ver != null) version = String.valueOf(ver).trim();
+        boolean hasSnapshot = SNAPSHOT_FIELD.matcher(json).find();
+        boolean didGenerate = forceSnapshot || !hasSnapshot;
+        if (didGenerate) {
+          try {
+            json = snapshotEngine.generateSnapshot(json, pretty,
+                profileFields.url(), profileFields.name());
+            stats.generated++;
+            if (debug) {
+              System.out.printf(Locale.ROOT, "Generated local snapshot: %s%n", f);
             }
-            
-            // Skip problematic package: hl7.fhir.extensions.r5#4.0.1
-            if ("hl7.fhir.extensions.r5".equals(pkgName) && "4.0.1".equals(version)) {
-                System.out.printf(Locale.ROOT, "Skipping known problematic package from sushi-config: %s@%s%n", pkgName, version);
-                continue;
-            }
-            
-            coords.add((version == null || version.isBlank()) ? pkgName : (pkgName + "@" + version));
+          } catch (Exception e) {
+            System.err.printf(Locale.ROOT, "Snapshot generation failed for %s: %s%n", f,
+                e.getMessage());
+            continue;
+          }
         }
-        return coords;
-    }
 
-    private static List<String> gatherPkgCoordsFromSushi(Path file, String inlineYaml) throws IOException {
-        List<String> all = new ArrayList<>();
-        if (file != null) {
-            String text = Files.readString(file);
-            all.addAll(parseSushiDepsYaml(text));
+        Path rel = profilesDir.relativize(f);
+        Path target = localOutBase.resolve(rel);
+        try {
+          if (!didGenerate && !overwrite && Files.exists(target)) {
+            continue;
+          }
+          Files.createDirectories(target.getParent());
+          Files.writeString(target, json, StandardOpenOption.CREATE,
+              StandardOpenOption.TRUNCATE_EXISTING);
+          stats.written++;
+        } catch (Exception e) {
+          System.err.printf(Locale.ROOT, "Write failed for %s: %s%n", target, e.getMessage());
         }
-        if (inlineYaml != null && !inlineYaml.isBlank()) {
-            all.addAll(parseSushiDepsYaml(inlineYaml));
-        }
-        return all;
+      }
     }
+    return stats;
+  }
 
-    private static Optional<String> gatherFhirVersionFromSushi(Path file) throws IOException {
-        if (file == null) {
-            return Optional.empty();
-        }
-        return parseSushiFhirVersion(Files.readString(file));
-    }
+  // Compatibility wrappers for tests and existing callers.
+  static List<String> parseSushiDepsYaml(String yamlText) {
+    return DependencyInputParser.parseSushiDepsYaml(yamlText);
+  }
 
-    private static Optional<String> parseSushiFhirVersion(String yamlText) {
-        if (yamlText == null || yamlText.isBlank()) return Optional.empty();
-        Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
-        Object root = yaml.load(yamlText);
-        if (!(root instanceof Map<?, ?> map)) return Optional.empty();
-        Object raw = map.get("fhirVersion");
-        return extractFhirVersion(raw);
-    }
+  static List<String> parsePackageJsonDependencies(String jsonText) {
+    return DependencyInputParser.parsePackageJsonDependencies(jsonText);
+  }
 
-    private static Optional<String> extractFhirVersion(Object node) {
-        if (node == null) return Optional.empty();
-        if (node instanceof String s) {
-            String trimmed = s.trim();
-            return trimmed.isBlank() ? Optional.empty() : Optional.of(trimmed);
-        }
-        if (node instanceof Collection<?> coll) {
-            for (Object entry : coll) {
-                if (entry == null) continue;
-                String trimmed = entry.toString().trim();
-                if (!trimmed.isBlank()) {
-                    return Optional.of(trimmed);
-                }
-            }
-            return Optional.empty();
-        }
-        if (node.getClass().isArray()) {
-            int length = java.lang.reflect.Array.getLength(node);
-            for (int i = 0; i < length; i++) {
-                Object entry = java.lang.reflect.Array.get(node, i);
-                if (entry == null) continue;
-                String trimmed = entry.toString().trim();
-                if (!trimmed.isBlank()) {
-                    return Optional.of(trimmed);
-                }
-            }
-            return Optional.empty();
-        }
-        String fallback = node.toString().trim();
-        return fallback.isBlank() ? Optional.empty() : Optional.of(fallback);
-    }
+  static Optional<String> parseSushiFhirVersion(String yamlText) {
+    return DependencyInputParser.parseSushiFhirVersion(yamlText);
+  }
 
-    // --- Minimal JSON helpers (avoid full parse when only url/name/id are needed) ---
+  static List<String> selectLatestCoordinatesByPackageId(Collection<String> coordinates) {
+    return CoordinateSelector.selectLatestCoordinatesByPackageId(coordinates);
+  }
 
-    private static String getUrlFromJson(String json) {
-        String u = extractJsonString(json, "url");
-        return (u != null) ? u : "";
-    }
+  static Optional<String> parseCacheVersionFromIni(String iniText) {
+    return CacheSafety.parseCacheVersionFromIni(iniText);
+  }
 
-    private static String getNameFromJson(String json) {
-        String n = extractJsonString(json, "name");
-        return (n != null) ? n : "StructureDefinition";
-    }
+  static boolean isSupportedCacheVersion(String version) {
+    return CacheSafety.isSupportedCacheVersion(version);
+  }
 
-    private static String safeNameFromJson(String json) {
-        String url = extractJsonString(json, "url");
-        if (url != null && !url.isBlank()) {
-            int i = url.lastIndexOf('/');
-            String last = (i >= 0 && i < url.length() - 1) ? url.substring(i + 1) : url;
-            return last.replaceAll("[^A-Za-z0-9._-]", "_");
-        }
-        String name = extractJsonString(json, "name");
-        if (name != null && !name.isBlank()) return name.replaceAll("[^A-Za-z0-9._-]", "_");
-        String id = extractJsonString(json, "id");
-        if (id != null && !id.isBlank()) return id.replaceAll("[^A-Za-z0-9._-]", "_");
-        return UUID.randomUUID().toString();
-    }
+  static boolean shouldValidateDefaultCacheSafety(Path effectiveCacheDir) {
+    return CacheSafety.shouldValidateDefaultCacheSafety(effectiveCacheDir, defaultCacheDir());
+  }
 
-    /**
-     * Very small JSON string extractor for a top-level string field.
-     */
-    private static String extractJsonString(String json, String field) {
-        String regex = "\\\"" + field + "\\\"\\s*:\\s*\\\"(.*?)\\\"";
-        var m = Pattern.compile(regex, Pattern.DOTALL).matcher(json);
-        if (m.find()) {
-            return m.group(1);
-        }
-        return null;
-    }
+  static String summarizeException(Throwable ex) {
+    return ExceptionSummary.summarizeException(ex);
+  }
+
+  private static final class PackageStats {
+    int total;
+    int generated;
+    int sdWritten;
+    int filesCopied;
+  }
+
+  private static final class LocalStats {
+    int total;
+    int generated;
+    int written;
+  }
 }

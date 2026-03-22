@@ -1,4 +1,4 @@
-# FHIR Package Snapshot Tool (Java 21, HAPI 8)
+# FHIR Package Snapshot Tool (Java 21)
 
 [![Build](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/ci.yml)
 [![Release Workflow](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/release.yml/badge.svg)](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/release.yml)
@@ -13,8 +13,10 @@ A small CLI tool that downloads FHIR NPM packages from the registry, resolves re
 ## Features
 - Multiple packages via `-p` (also comma-separated)
 - Dependencies from `sushi-config.yaml` (file or YAML string) – supports both Sushi structures
+- Dependencies from `package.json` via `dependencies` (ignores `devDependencies`)
 - Automatic FHIR context detection (R4, R4B, R5; DSTU3 fallback)
 - Snapshot generation (optional `--force-snapshot`)
+- If the same package ID is provided multiple times with different versions, the newest SemVer is selected
 - Output layout: one subfolder per package in `--out`, named `<packageId>#<version>` (e.g. `hl7.fhir.us.core#6.1.0`). The complete package is copied there; only `StructureDefinition` JSON files are parsed and (re)written with snapshots.
 - Local profiles folder via `--profiles-dir` (recursively loads JSON `StructureDefinition`s and writes snapshots under `--out/local`)
 
@@ -41,6 +43,11 @@ dependencies:
     version: 1.0.0
 YAML
 )"   -o ./out/from-inline
+```
+
+**Dependencies from package.json:**
+```bash
+java -jar target/fhir-pkg-tool.jar   --package-json-file ./package.json   -o ./out/from-package-json
 ```
 
 **Always rebuild snapshots:**
@@ -72,8 +79,9 @@ Notes:
 - `-p, --package`: One or more package coordinates (`name@version`). Comma-separated allowed, can be repeated.
 - `--sushi-deps-file`: Path to a `sushi-config.yaml` (dependencies are read).
 - `--sushi-deps-str`: Inline YAML block containing `dependencies:`.
-- `-o, --out`: Output directory (default: `~/.fhir/packages`; on Windows: `C:\Users\<USER>\.fhir\packages`). Each package is copied to a subfolder `<id>#<version>`.
-- `--cache`: Local NPM package cache directory (default: `~/.fhir/packages`).
+- `--package-json-file`: Path to a `package.json` file. Only `dependencies` are used (`devDependencies` are ignored).
+- `-o, --out`: Output directory (default: `~/.fhir/packages`; on Windows: `C:\Users\<USER>\.fhir\packages`).
+- `--repair-lock-files`: Deletes `*.lock` files in the default cache directory before package loading.
 - `--registry`: Package registry URL (default: `https://packages.fhir.org`).
 - `--skip-deps`: Do not auto-load transitive dependencies.
 - `--overwrite`: Overwrite existing files in the output (both copied and snapshotted).
