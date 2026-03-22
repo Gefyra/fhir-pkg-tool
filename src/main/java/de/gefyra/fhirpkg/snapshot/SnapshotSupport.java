@@ -1,4 +1,4 @@
-package de.gefyra.fhirpkg;
+package de.gefyra.fhirpkg.snapshot;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -8,20 +8,21 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import org.hl7.fhir.utilities.VersionUtilities;
 import org.hl7.fhir.utilities.npm.NpmPackage;
 
-final class SnapshotSupport {
+public final class SnapshotSupport {
 
   private SnapshotSupport() {
   }
 
-  enum FhirRelease {
+  public enum FhirRelease {
     R4,
     R4B,
     R5
   }
 
-  interface SnapshotEngine {
+  public interface SnapshotEngine {
 
     String generateSnapshot(String json, boolean pretty, String profileUrl, String profileName)
         throws Exception;
@@ -29,18 +30,22 @@ final class SnapshotSupport {
     void cacheResource(String json) throws Exception;
   }
 
-  static FhirRelease resolveFhirRelease(String version) {
+  public static FhirRelease resolveFhirRelease(String version) {
     String fhirVer = Optional.ofNullable(version).orElse("").toLowerCase(Locale.ROOT);
-    if (fhirVer.startsWith("4.3")) {
-      return FhirRelease.R4B;
-    }
-    if (fhirVer.startsWith("4")) {
-      return FhirRelease.R4;
+    try {
+      if (VersionUtilities.isR4BVer(fhirVer)) {
+        return FhirRelease.R4B;
+      }
+      if (VersionUtilities.isR4Ver(fhirVer)) {
+        return FhirRelease.R4;
+      }
+    } catch (Exception e) {
+      return FhirRelease.R5;
     }
     return FhirRelease.R5;
   }
 
-  static SnapshotEngine createSnapshotEngine(FhirRelease release, List<NpmPackage> pkgs)
+  public static SnapshotEngine createSnapshotEngine(FhirRelease release, List<NpmPackage> pkgs)
       throws Exception {
     return switch (release) {
       case R4 -> createR4SnapshotEngine(pkgs);
@@ -262,4 +267,3 @@ final class SnapshotSupport {
     return null;
   }
 }
-

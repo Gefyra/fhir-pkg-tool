@@ -1,8 +1,8 @@
-package de.gefyra.fhirpkg;
+package de.gefyra.fhirpkg.deps;
 
 import java.util.Locale;
 
-final class KnownProblematicPackages {
+public final class KnownProblematicPackages {
 
   private static final String KNOWN_PROBLEMATIC_PACKAGE_NAME = "hl7.fhir.extensions.r5";
   private static final String KNOWN_PROBLEMATIC_PACKAGE_VERSION = "4.0.1";
@@ -10,7 +10,7 @@ final class KnownProblematicPackages {
   private KnownProblematicPackages() {
   }
 
-  static boolean isKnownProblematicCoordinate(String coordinate) {
+  public static boolean isKnownProblematicCoordinate(String coordinate) {
     if (coordinate == null || coordinate.isBlank()) {
       return false;
     }
@@ -26,7 +26,7 @@ final class KnownProblematicPackages {
     return isKnownProblematicPackage(name, version);
   }
 
-  static boolean isKnownProblematicPackage(String name, String version) {
+  public static boolean isKnownProblematicPackage(String name, String version) {
     if (name == null || version == null) {
       return false;
     }
@@ -34,7 +34,7 @@ final class KnownProblematicPackages {
         && KNOWN_PROBLEMATIC_PACKAGE_VERSION.equals(version.trim());
   }
 
-  static void logSkippingKnownProblematicPackage(String source, String coordinate) {
+  public static void logSkippingKnownProblematicPackage(String source, String coordinate) {
     if (source == null || source.isBlank()) {
       System.out.printf(Locale.ROOT, "Skipping known problematic package: %s%n", coordinate);
       return;
@@ -43,9 +43,9 @@ final class KnownProblematicPackages {
         coordinate);
   }
 
-  static void logSkippingKnownProblematicPackage(String source, String name, String version) {
+  public static void logSkippingKnownProblematicPackage(String source, String name,
+      String version) {
     String coord = (version == null || version.isBlank()) ? name : (name + "@" + version);
     logSkippingKnownProblematicPackage(source, coord);
   }
 }
-

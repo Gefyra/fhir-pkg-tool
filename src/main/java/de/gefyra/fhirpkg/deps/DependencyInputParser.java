@@ -1,4 +1,4 @@
-package de.gefyra.fhirpkg;
+package de.gefyra.fhirpkg.deps;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -15,14 +15,15 @@ import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
 
-final class DependencyInputParser {
+public final class DependencyInputParser {
 
   private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
 
   private DependencyInputParser() {
   }
 
-  static List<String> gatherPkgCoordsFromSushi(Path file, String inlineYaml) throws IOException {
+  public static List<String> gatherPkgCoordsFromSushi(Path file, String inlineYaml)
+      throws IOException {
     List<String> all = new ArrayList<>();
     if (file != null) {
       String text = Files.readString(file);
@@ -34,14 +35,15 @@ final class DependencyInputParser {
     return all;
   }
 
-  static List<String> gatherPkgCoordsFromPackageJson(Path packageJsonPath) throws IOException {
+  public static List<String> gatherPkgCoordsFromPackageJson(Path packageJsonPath)
+      throws IOException {
     if (packageJsonPath == null) {
       return List.of();
     }
     return parsePackageJsonDependencies(Files.readString(packageJsonPath));
   }
 
-  static Optional<String> gatherFhirVersionFromSushi(Path file, String inlineYaml)
+  public static Optional<String> gatherFhirVersionFromSushi(Path file, String inlineYaml)
       throws IOException {
     if (file != null) {
       Optional<String> fromFile = parseSushiFhirVersion(Files.readString(file));
@@ -55,7 +57,7 @@ final class DependencyInputParser {
     return Optional.empty();
   }
 
-  static List<String> parseSushiDepsYaml(String yamlText) {
+  public static List<String> parseSushiDepsYaml(String yamlText) {
     if (yamlText == null || yamlText.isBlank()) {
       return List.of();
     }
@@ -75,7 +77,7 @@ final class DependencyInputParser {
     return parseDependencyMap(deps, "sushi-config");
   }
 
-  static List<String> parsePackageJsonDependencies(String jsonText) {
+  public static List<String> parsePackageJsonDependencies(String jsonText) {
     if (jsonText == null || jsonText.isBlank()) {
       return List.of();
     }
@@ -92,7 +94,7 @@ final class DependencyInputParser {
     }
   }
 
-  static Optional<String> parseSushiFhirVersion(String yamlText) {
+  public static Optional<String> parseSushiFhirVersion(String yamlText) {
     if (yamlText == null || yamlText.isBlank()) {
       return Optional.empty();
     }
@@ -183,4 +185,3 @@ final class DependencyInputParser {
     return fallback.isBlank() ? Optional.empty() : Optional.of(fallback);
   }
 }
-

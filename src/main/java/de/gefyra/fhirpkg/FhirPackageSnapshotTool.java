@@ -1,5 +1,13 @@
 package de.gefyra.fhirpkg;
 
+import de.gefyra.fhirpkg.cache.CacheSafety;
+import de.gefyra.fhirpkg.cache.PackageLoadingSupport;
+import de.gefyra.fhirpkg.common.ExceptionSummary;
+import de.gefyra.fhirpkg.deps.CoordinateSelector;
+import de.gefyra.fhirpkg.deps.DependencyInputParser;
+import de.gefyra.fhirpkg.deps.KnownProblematicPackages;
+import de.gefyra.fhirpkg.json.JsonFieldExtractor;
+import de.gefyra.fhirpkg.snapshot.SnapshotSupport;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -387,12 +395,14 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
             continue;
           }
           String json = new String(is.readAllBytes());
+          JsonFieldExtractor.ProfileFields profileFields = JsonFieldExtractor.extractProfileFields(
+              json);
 
           boolean hasSnapshot = SNAPSHOT_FIELD.matcher(json).find();
           boolean didGenerate = forceSnapshot || !hasSnapshot;
           if (didGenerate) {
             json = snapshotEngine.generateSnapshot(json, pretty,
-                JsonFieldExtractor.getUrlFromJson(json), JsonFieldExtractor.getNameFromJson(json));
+                profileFields.url(), profileFields.name());
             stats.generated++;
             if (debug) {
               System.out.printf(Locale.ROOT, "Generated snapshot: %s#%s/%s%n", p.name(), p.version(),
@@ -454,8 +464,9 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
           continue;
         }
 
-        String resourceType = JsonFieldExtractor.extractJsonString(json, "resourceType");
-        if (!"StructureDefinition".equals(resourceType)) {
+        JsonFieldExtractor.ProfileFields profileFields = JsonFieldExtractor.extractProfileFields(
+            json);
+        if (!"StructureDefinition".equals(profileFields.resourceType())) {
           continue;
         }
         stats.total++;
@@ -465,7 +476,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         if (didGenerate) {
           try {
             json = snapshotEngine.generateSnapshot(json, pretty,
-                JsonFieldExtractor.getUrlFromJson(json), JsonFieldExtractor.getNameFromJson(json));
+                profileFields.url(), profileFields.name());
             stats.generated++;
             if (debug) {
               System.out.printf(Locale.ROOT, "Generated local snapshot: %s%n", f);

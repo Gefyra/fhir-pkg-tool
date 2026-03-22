@@ -1,5 +1,6 @@
-package de.gefyra.fhirpkg;
+package de.gefyra.fhirpkg.cache;
 
+import de.gefyra.fhirpkg.deps.KnownProblematicPackages;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -13,12 +14,12 @@ import java.util.Set;
 import org.hl7.fhir.utilities.npm.IPackageCacheManager;
 import org.hl7.fhir.utilities.npm.NpmPackage;
 
-final class PackageLoadingSupport {
+public final class PackageLoadingSupport {
 
   private PackageLoadingSupport() {
   }
 
-  static Set<Path> initKnownCacheDirs(Path cacheDir) {
+  public static Set<Path> initKnownCacheDirs(Path cacheDir) {
     Set<Path> known = new HashSet<>();
     if (cacheDir == null) {
       return known;
@@ -40,8 +41,8 @@ final class PackageLoadingSupport {
     return known;
   }
 
-  static NpmPackage loadPackage(IPackageCacheManager cache, String coordinate, Set<Path> knownCacheDirs)
-      throws IOException {
+  public static NpmPackage loadPackage(IPackageCacheManager cache, String coordinate,
+      Set<Path> knownCacheDirs) throws IOException {
     String name = coordinate;
     String version = null;
     if (coordinate.contains("@")) {
@@ -56,7 +57,7 @@ final class PackageLoadingSupport {
     return pkg;
   }
 
-  static List<NpmPackage> loadAllDependencies(IPackageCacheManager cache, NpmPackage root,
+  public static List<NpmPackage> loadAllDependencies(IPackageCacheManager cache, NpmPackage root,
       Set<String> seenByName, Set<Path> knownCacheDirs) throws IOException {
     List<String> deps = root.dependencies();
     if (deps == null || deps.isEmpty()) {

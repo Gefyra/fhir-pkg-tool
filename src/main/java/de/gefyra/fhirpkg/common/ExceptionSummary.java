@@ -1,11 +1,11 @@
-package de.gefyra.fhirpkg;
+package de.gefyra.fhirpkg.common;
 
-final class ExceptionSummary {
+public final class ExceptionSummary {
 
   private ExceptionSummary() {
   }
 
-  static String summarizeException(Throwable ex) {
+  public static String summarizeException(Throwable ex) {
     if (ex == null) {
       return "Unknown error";
     }
@@ -23,4 +23,3 @@ final class ExceptionSummary {
     return msg;
   }
 }
-
