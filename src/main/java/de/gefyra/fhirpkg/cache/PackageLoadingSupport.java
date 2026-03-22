@@ -1,5 +1,6 @@
 package de.gefyra.fhirpkg.cache;
 
+import de.gefyra.fhirpkg.common.ExceptionSummary;
 import de.gefyra.fhirpkg.deps.KnownProblematicPackages;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -58,7 +59,7 @@ public final class PackageLoadingSupport {
   }
 
   public static List<NpmPackage> loadAllDependencies(IPackageCacheManager cache, NpmPackage root,
-      Set<String> seenByName, Set<Path> knownCacheDirs) throws IOException {
+      Set<String> seenByName, Set<Path> knownCacheDirs) {
     List<String> deps = root.dependencies();
     if (deps == null || deps.isEmpty()) {
       return List.of();
@@ -80,16 +81,23 @@ public final class PackageLoadingSupport {
         continue;
       }
 
-      if (!seenByName.add(name)) {
+      if (seenByName.contains(name)) {
         continue;
       }
 
-      NpmPackage p = (version == null || version.isBlank())
-          ? cache.loadPackage(name)
-          : cache.loadPackage(name, version);
-      notePackageCacheLocation(p, knownCacheDirs);
-      out.add(p);
-      out.addAll(loadAllDependencies(cache, p, seenByName, knownCacheDirs));
+      try {
+        NpmPackage p = (version == null || version.isBlank())
+            ? cache.loadPackage(name)
+            : cache.loadPackage(name, version);
+        seenByName.add(name);
+        notePackageCacheLocation(p, knownCacheDirs);
+        out.add(p);
+        out.addAll(loadAllDependencies(cache, p, seenByName, knownCacheDirs));
+      } catch (Exception e) {
+        String coordinate = version == null || version.isBlank() ? name : name + "#" + version;
+        System.err.printf(Locale.ROOT, "Failed to install dependency %s (%s). Continuing.%n",
+            coordinate, ExceptionSummary.summarizeException(e));
+      }
     }
     return out;
   }

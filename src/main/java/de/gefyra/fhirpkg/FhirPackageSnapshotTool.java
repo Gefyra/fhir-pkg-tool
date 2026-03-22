@@ -323,8 +323,8 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     return cacheBuilder.build();
   }
 
-  private List<NpmPackage> loadRequestedAndDependencyPackages(IPackageCacheManager cache,
-      List<String> resolvedRequested, Set<Path> knownCacheDirs) throws IOException {
+  List<NpmPackage> loadRequestedAndDependencyPackages(IPackageCacheManager cache,
+      List<String> resolvedRequested, Set<Path> knownCacheDirs) {
     List<NpmPackage> allPkgs = new ArrayList<>();
     Set<String> seenByName = new HashSet<>();
     for (String coord : resolvedRequested) {
@@ -332,9 +332,14 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         KnownProblematicPackages.logSkippingKnownProblematicPackage("requested packages", coord);
         continue;
       }
-      NpmPackage p = PackageLoadingSupport.loadPackage(cache, coord, knownCacheDirs);
-      if (seenByName.add(p.name())) {
-        allPkgs.add(p);
+      try {
+        NpmPackage p = PackageLoadingSupport.loadPackage(cache, coord, knownCacheDirs);
+        if (seenByName.add(p.name())) {
+          allPkgs.add(p);
+        }
+      } catch (Exception e) {
+        System.err.printf(Locale.ROOT, "Failed to install requested package %s (%s). Continuing.%n",
+            coord, summarizeException(e));
       }
     }
 
