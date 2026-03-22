@@ -1,4 +1,4 @@
-# FHIR Package Snapshot Tool (Java 21, HAPI 8)
+# FHIR Package Snapshot Tool (Java 21)
 
 [![Build](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/ci.yml)
 [![Release Workflow](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/release.yml/badge.svg)](https://github.com/Gefyra/fhir-pkg-tool/actions/workflows/release.yml)

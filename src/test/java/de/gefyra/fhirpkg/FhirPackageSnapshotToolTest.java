@@ -1,7 +1,9 @@
 package de.gefyra.fhirpkg;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
@@ -157,5 +159,65 @@ class FhirPackageSnapshotToolTest {
     void hasDebugFlag_detectsLongOption() {
         assertTrue(FhirPackageSnapshotTool.hasDebugFlag(new String[]{"--debug"}));
         assertFalse(FhirPackageSnapshotTool.hasDebugFlag(new String[]{"-p", "de.test@1.0.0"}));
+    }
+
+    @Test
+    void call_checksLockFilesAlsoForCustomOut(@TempDir Path tempDir) throws Exception {
+        Path out = tempDir.resolve("custom-out");
+        Files.createDirectories(out);
+        Files.writeString(out.resolve("test.lock"), "locked");
+
+        FhirPackageSnapshotTool tool = new FhirPackageSnapshotTool();
+        tool.outDir = out;
+
+        int exit = tool.call();
+
+        assertEquals(5, exit);
+    }
+
+    @Test
+    void call_repairLockFilesWorksAlsoForCustomOut(@TempDir Path tempDir) throws Exception {
+        Path out = tempDir.resolve("custom-out");
+        Files.createDirectories(out);
+        Path lock = out.resolve("repair.lock");
+        Files.writeString(lock, "locked");
+
+        FhirPackageSnapshotTool tool = new FhirPackageSnapshotTool();
+        tool.outDir = out;
+        tool.repairLockFiles = true;
+
+        int exit = tool.call();
+
+        assertEquals(2, exit);
+        assertFalse(Files.exists(lock));
+    }
+
+    @Test
+    void call_missingPackagesIniOnCustomOutIsAllowed(@TempDir Path tempDir) throws Exception {
+        Path out = tempDir.resolve("custom-out");
+
+        FhirPackageSnapshotTool tool = new FhirPackageSnapshotTool();
+        tool.outDir = out;
+
+        int exit = tool.call();
+
+        assertEquals(2, exit);
+    }
+
+    @Test
+    void call_invalidPackagesIniOnCustomOutFails(@TempDir Path tempDir) throws Exception {
+        Path out = tempDir.resolve("custom-out");
+        Files.createDirectories(out);
+        Files.writeString(out.resolve("packages.ini"), """
+                [cache]
+                version = 3
+                """);
+
+        FhirPackageSnapshotTool tool = new FhirPackageSnapshotTool();
+        tool.outDir = out;
+
+        int exit = tool.call();
+
+        assertEquals(4, exit);
     }
 }
