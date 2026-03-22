@@ -13,6 +13,7 @@
     <maven.compiler.target>21</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <hapi.version>8.6.5</hapi.version>
+    <junit.version>5.10.2</junit.version>
   </properties>
 
   <dependencies>
@@ -88,6 +89,13 @@
       <version>2.0.17</version>
       <scope>runtime</scope>
     </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -146,6 +154,12 @@
           </compilerArgs>
         </configuration>
       </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+      </plugin>
     </plugins>
   </build>
 
@@ -184,6 +198,8 @@
                     <argument>${project.build.directory}/${project.build.finalName}.jar</argument>
                     <argument>-H:Name=${project.build.finalName}</argument>
                     <argument>-H:Path=${project.build.directory}</argument>
+                    <!-- required for package downloads in native mode -->
+                    <argument>--enable-url-protocols=https</argument>
                     <!-- no-fallback avoids generating a fallback image and fails if native-image can't build -->
                     <argument>--no-fallback</argument>
                     <!-- allow the user to pass additional options via -Dnative.image.args='...'

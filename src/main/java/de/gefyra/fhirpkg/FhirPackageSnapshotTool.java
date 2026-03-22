@@ -1,6 +1,8 @@
 package de.gefyra.fhirpkg;
 
 import ca.uhn.fhir.context.FhirContext;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.hl7.fhir.common.hapi.validation.support.CommonCodeSystemsTerminologyService;
 import ca.uhn.fhir.context.support.DefaultProfileValidationSupport;
 import ca.uhn.fhir.context.support.IValidationSupport;
@@ -24,6 +26,7 @@ import picocli.CommandLine.Option;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigInteger;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.Callable;
@@ -40,6 +43,10 @@ import java.util.regex.Pattern;
     description = "Downloads FHIR NPM packages, resolves dependencies, generates StructureDefinition snapshots, and writes them as JSON files."
 )
 public class FhirPackageSnapshotTool implements Callable<Integer> {
+    private static final String KNOWN_PROBLEMATIC_PACKAGE_NAME = "hl7.fhir.extensions.r5";
+    private static final String KNOWN_PROBLEMATIC_PACKAGE_VERSION = "4.0.1";
+    private static final String EXPECTED_CACHE_METADATA_VERSION = "4";
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
 
     @Option(names = {"-p", "--package"},
             description = "FHIR NPM packages (repeatable or comma-separated; e.g. hl7.fhir.r4.core@4.0.1,hl7.fhir.us.core@6.1.0)")
@@ -51,15 +58,15 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     @Option(names = {"--sushi-deps-file"}, description = "Path to sushi-config.yaml (or a file containing the YAML dependencies)")
     Path sushiDepsFile;
 
+    @Option(names = {"--package-json-file"}, description = "Path to package.json (only 'dependencies' are read; 'devDependencies' are ignored)")
+    Path packageJsonFile;
+
     public static Path defaultOutputDir() {
         return defaultCacheDir();
     }
 
     @Option(names = {"-o", "--out"}, description = "Output directory for StructureDefinitions (default: ~/.fhir/packages; Windows: C:\\Users\\<USER>\\.fhir\\packages)")
     Path outDir = defaultOutputDir();
-
-    @Option(names = {"--cache"}, description = "Local cache folder for NPM packages (default: ~/.fhir/packages)")
-    Path cacheDir = defaultCacheDir();
 
     public static Path defaultCacheDir() {
         // Check if we're in GitHub Actions
@@ -93,18 +100,63 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     @Option(names = {"--profiles-dir"}, description = "Directory with local StructureDefinition JSONs (processed recursively)")
     Path profilesDir;
 
+    @Option(names = {"--repair-lock-files"}, description = "Delete '*.lock' files in default cache directory before package loading")
+    boolean repairLockFiles = false;
+
+    @Option(names = {"--debug"}, description = "Print stack traces for execution errors")
+    boolean debug = false;
+
     public static void main(String[] args) {
         System.out.println("FHIR Package Tool starting...");
-        int exit = new CommandLine(new FhirPackageSnapshotTool()).execute(args);
+        if (!hasDebugFlag(args)) {
+            // Keep third-party logging quiet by default; detailed logs are available with --debug.
+            System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "error");
+        }
+        FhirPackageSnapshotTool tool = new FhirPackageSnapshotTool();
+        CommandLine commandLine = new CommandLine(tool);
+        commandLine.setExecutionExceptionHandler((ex, cmd, parseResult) -> {
+            System.err.printf(Locale.ROOT, "Error: %s%n", summarizeException(ex));
+            if (tool.debug) {
+                ex.printStackTrace(System.err);
+            }
+            return 1;
+        });
+        int exit = commandLine.execute(args);
         System.exit(exit);
+    }
+
+    static boolean hasDebugFlag(String[] args) {
+        if (args == null || args.length == 0) {
+            return false;
+        }
+        for (String arg : args) {
+            if ("--debug".equals(arg)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
     public Integer call() throws Exception {
+        Path normalizedOutDir = outDir.toAbsolutePath().normalize();
+        Path effectiveOutDir = normalizedOutDir;
+        Path effectiveCacheDir = effectiveOutDir;
+        boolean validateDefaultCacheSafety = shouldValidateDefaultCacheSafety(effectiveCacheDir);
+
         // Debug output: Show which directories will be used
         System.out.println("FHIR Package Tool Configuration:");
-        System.out.println("  Output directory: " + outDir.toAbsolutePath());
-        System.out.println("  Cache directory: " + cacheDir.toAbsolutePath());
+        System.out.println("  Configured output directory: " + normalizedOutDir);
+        System.out.println("  Effective output directory: " + effectiveOutDir);
+        System.out.println("  Effective cache directory: " + effectiveCacheDir);
+        if (validateDefaultCacheSafety) {
+            System.out.println("  Cache safety checks: enabled (default cache path)");
+        } else {
+            System.out.println("  Cache safety checks: skipped (non-default output path)");
+            if (repairLockFiles) {
+                System.out.println("  Note: --repair-lock-files is ignored for non-default output paths");
+            }
+        }
         
         // Show how directories were determined
         String githubActions = System.getenv("GITHUB_ACTIONS");
@@ -116,10 +168,70 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
             System.out.println("  Running in local environment");
         }
         System.out.println();
-        
-        Files.createDirectories(outDir);
 
-        // 1) Collect package coordinates: -p (comma-separated is fine), Sushi file, Sushi inline string
+        if (validateDefaultCacheSafety) {
+            Optional<String> cacheVersion;
+            try {
+                cacheVersion = readCacheVersionFromCacheIni(effectiveCacheDir);
+            } catch (IOException e) {
+                System.err.printf(Locale.ROOT, "Error: Unable to read cache metadata from %s (%s). Aborting.%n",
+                        effectiveCacheDir.resolve("packages.ini"), e.getMessage());
+                return 4;
+            }
+            if (cacheVersion.isPresent()) {
+                String detectedVersion = cacheVersion.get();
+                if (!isSupportedCacheVersion(detectedVersion)) {
+                    System.err.printf(Locale.ROOT,
+                            "Error: Unsupported cache metadata version '%s' in packages.ini. Expected '%s'. Aborting.%n",
+                            detectedVersion, EXPECTED_CACHE_METADATA_VERSION);
+                    return 4;
+                }
+                System.out.println("Detected cache metadata version in packages.ini: " + detectedVersion);
+            } else if (Files.exists(effectiveCacheDir.resolve("packages.ini"))) {
+                System.err.println("Error: packages.ini found but [cache]/version could not be parsed. Aborting to avoid unsafe cache operations.");
+                return 4;
+            }
+            List<Path> lockFiles;
+            try {
+                lockFiles = findLockFiles(effectiveCacheDir);
+            } catch (IOException e) {
+                System.err.printf(Locale.ROOT, "Error: Failed to list lock files in %s (%s). Aborting.%n",
+                        effectiveCacheDir, e.getMessage());
+                return 5;
+            }
+            if (!lockFiles.isEmpty()) {
+                System.err.printf(Locale.ROOT, "Error: Found %d .lock file(s) in cache.%n", lockFiles.size());
+                if (repairLockFiles) {
+                    int deleted;
+                    try {
+                        deleted = deleteLockFiles(lockFiles);
+                    } catch (IOException e) {
+                        System.err.printf(Locale.ROOT, "Error: Failed to delete lock files (%s). Aborting.%n", e.getMessage());
+                        return 5;
+                    }
+                    System.out.printf(Locale.ROOT, "Repair: deleted %d .lock file(s).%n", deleted);
+                    List<Path> remainingLocks;
+                    try {
+                        remainingLocks = findLockFiles(effectiveCacheDir);
+                    } catch (IOException e) {
+                        System.err.printf(Locale.ROOT, "Error: Failed to re-check lock files in %s (%s). Aborting.%n",
+                                effectiveCacheDir, e.getMessage());
+                        return 5;
+                    }
+                    if (!remainingLocks.isEmpty()) {
+                        System.err.printf(Locale.ROOT, "Error: %d .lock file(s) remain after repair. Aborting.%n", remainingLocks.size());
+                        return 5;
+                    }
+                } else {
+                    System.err.println("Hint: rerun with --repair-lock-files to remove stale lock files.");
+                    return 5;
+                }
+            }
+        }
+        
+        Files.createDirectories(effectiveOutDir);
+
+        // 1) Collect package coordinates: -p (comma-separated is fine), Sushi file/string, package.json file
         Set<String> requested = new LinkedHashSet<>();
         if (pkgCoordinates != null) {
             for (String s : pkgCoordinates) {
@@ -132,43 +244,45 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         }
         List<String> sushiPackages = gatherPkgCoordsFromSushi(sushiDepsFile, sushiDepsStr);
         requested.addAll(sushiPackages);
+        List<String> packageJsonPackages = gatherPkgCoordsFromPackageJson(packageJsonFile);
+        requested.addAll(packageJsonPackages);
+        List<String> resolvedRequested = selectLatestCoordinatesByPackageId(requested);
         
         // Debug: Show all requested packages
-        if (!requested.isEmpty()) {
+        if (!resolvedRequested.isEmpty()) {
             System.out.println("Requested packages:");
-            for (String pkg : requested) {
+            for (String pkg : resolvedRequested) {
                 System.out.println("  - " + pkg);
             }
         }
 
-        Optional<String> sushiFhirVersion = gatherFhirVersionFromSushi(sushiDepsFile);
+        Optional<String> sushiFhirVersion = gatherFhirVersionFromSushi(sushiDepsFile, sushiDepsStr);
 
-        // If only sushi-config is provided but no dependencies found, that's OK - just skip package installation
-        if (requested.isEmpty() && profilesDir == null) {
-            if (sushiDepsFile != null || sushiDepsStr != null) {
-                System.out.println("No dependencies found in sushi-config, skipping package installation.");
+        // If dependency source files/strings are provided but no dependencies found, skip package installation
+        if (resolvedRequested.isEmpty() && profilesDir == null) {
+            if (sushiDepsFile != null || sushiDepsStr != null || packageJsonFile != null) {
+                System.out.println("No dependencies found in provided dependency sources, skipping package installation.");
                 return 0;
             }
-            System.err.println("No packages specified. Use -p or --sushi-deps-* (or provide --profiles-dir). Aborting.");
+            System.err.println("No packages specified. Use -p, --sushi-deps-*, or --package-json-file (or provide --profiles-dir). Aborting.");
             return 2;
         }
 
         // 2) Configure package cache/registry
         // FilesystemPackageCacheManager in utilities 6.6.6 uses a Builder API
-        Files.createDirectories(cacheDir);
-        Set<Path> knownCacheDirs = initKnownCacheDirs(cacheDir);
+        Files.createDirectories(effectiveCacheDir);
+        Set<Path> knownCacheDirs = initKnownCacheDirs(effectiveCacheDir);
         FilesystemPackageCacheManager.Builder cacheBuilder = new FilesystemPackageCacheManager.Builder()
-                .withCacheFolder(cacheDir.toString())
+                .withCacheFolder(effectiveCacheDir.toString())
                 .withPackageServers(List.of(new PackageServer(registryUrl)));
         IPackageCacheManager cache = cacheBuilder.build();
 
         // 3) Load root packages (avoid duplicates by name)
         List<NpmPackage> allPkgs = new ArrayList<>();
         Set<String> seenByName = new HashSet<>();
-        for (String coord : requested) {
-            // Replace problematic version: hl7.fhir.extensions.r5@4.0.1 with latest
-            if (coord.equals("hl7.fhir.extensions.r5@4.0.1")) {
-                System.out.printf(Locale.ROOT, "Skipping known problematic package: %s%n", coord);
+        for (String coord : resolvedRequested) {
+            if (isKnownProblematicCoordinate(coord)) {
+                logSkippingKnownProblematicPackage("requested packages", coord);
                 continue;
             }
             
@@ -212,35 +326,29 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         // 7) If no --profiles-dir: copy packages and snapshot their StructureDefinitions
         //    If --profiles-dir is present: skip package output entirely (local-only output)
         int generated = 0, total = 0, sdWritten = 0, filesCopied = 0;
-        boolean outIsCache = outDir.toAbsolutePath().normalize().equals(cacheDir.toAbsolutePath().normalize());
-        if (outIsCache) {
-            System.out.println("Output directory equals cache directory - will only update StructureDefinition snapshots in-place");
-        }
         
         if (profilesDir == null) {
             for (NpmPackage p : allPkgs) {
                 String pkgFolderName = p.name() + "#" + p.version();
-                Path pkgOutDir = outDir.resolve(pkgFolderName);
+                Path pkgOutDir = effectiveOutDir.resolve(pkgFolderName);
                 
-                // 7a) Copy all folders/files - SKIP if output equals cache to avoid corrupting cache
-                if (!outIsCache) {
-                    var folders = p.getFolders();
-                    for (Map.Entry<String, org.hl7.fhir.utilities.npm.NpmPackage.NpmPackageFolder> e : folders.entrySet()) {
-                        String folderName = e.getKey();
-                        var folder = e.getValue();
-                        Path folderOut = pkgOutDir.resolve(folderName);
-                        Files.createDirectories(folderOut);
-                        for (String fname : folder.listFiles()) {
-                            Path target = folderOut.resolve(fname);
-                            if (!overwrite && Files.exists(target)) {
-                                continue;
-                            }
-                            try (InputStream is = p.load(folderName, fname)) {
-                                if (is == null) continue;
-                                byte[] bytes = is.readAllBytes();
-                                Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-                                filesCopied++;
-                            }
+                // 7a) Copy all folders/files
+                var folders = p.getFolders();
+                for (Map.Entry<String, org.hl7.fhir.utilities.npm.NpmPackage.NpmPackageFolder> e : folders.entrySet()) {
+                    String folderName = e.getKey();
+                    var folder = e.getValue();
+                    Path folderOut = pkgOutDir.resolve(folderName);
+                    Files.createDirectories(folderOut);
+                    for (String fname : folder.listFiles()) {
+                        Path target = folderOut.resolve(fname);
+                        if (!overwrite && Files.exists(target)) {
+                            continue;
+                        }
+                        try (InputStream is = p.load(folderName, fname)) {
+                            if (is == null) continue;
+                            byte[] bytes = is.readAllBytes();
+                            Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                            filesCopied++;
                         }
                     }
                 }
@@ -284,7 +392,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
             if (!Files.exists(profilesDir) || !Files.isDirectory(profilesDir)) {
                 System.err.printf(Locale.ROOT, "Profiles directory not found or not a directory: %s%n", profilesDir);
             } else {
-                Path localOutBase = outDir.resolve("local");
+                Path localOutBase = effectiveOutDir.resolve("local");
                 SnapshotGeneratingValidationSupport snap = new SnapshotGeneratingValidationSupport(ctx);
 
                 // Build a local support layer with all local resources so cross-references resolve (bases, extensions)
@@ -370,9 +478,9 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
                 "Done: %d SDs found, %d snapshots generated, %d SD files written, %d files copied. Local: %d SDs, %d generated, %d written.%n",
                 total, generated, sdWritten, filesCopied, localTotal, localGenerated, localWritten);
         System.out.printf(Locale.ROOT,
-                "Output directory: %s%n", outDir.toAbsolutePath());
+                "Output directory: %s%n", effectiveOutDir);
         System.out.printf(Locale.ROOT,
-                "Cache directory: %s%n", cacheDir.toAbsolutePath());
+                "Cache directory: %s%n", effectiveCacheDir);
 
         return 0;
     }
@@ -414,9 +522,8 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
                 version = entry.substring(hashIdx + 1);
             }
 
-            // Skip problematic package: hl7.fhir.extensions.r5#4.0.1
-            if ("hl7.fhir.extensions.r5".equals(name) && "4.0.1".equals(version)) {
-                System.out.printf(Locale.ROOT, "Skipping known problematic package: %s#%s%n", name, version);
+            if (isKnownProblematicPackage(name, version)) {
+                logSkippingKnownProblematicPackage("resolved dependencies", name, version);
                 continue;
             }
 
@@ -538,8 +645,8 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         }
     }
 
-    // --- Sushi parsing ---
-    private static List<String> parseSushiDepsYaml(String yamlText) {
+    // --- Dependency source parsing ---
+    static List<String> parseSushiDepsYaml(String yamlText) {
         if (yamlText == null || yamlText.isBlank()) return List.of();
         Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
         Object root = yaml.load(yamlText);
@@ -549,28 +656,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         if (!map.containsKey("dependencies")) return List.of();
         Object depsNode = map.get("dependencies");
         if (!(depsNode instanceof Map<?, ?> deps)) return List.of();
-
-        List<String> coords = new ArrayList<>();
-        for (Map.Entry<?, ?> e : deps.entrySet()) {
-            String pkgName = String.valueOf(e.getKey()).trim();
-            Object v = e.getValue();
-            String version = null;
-            if (v instanceof String s) {
-                version = s.trim();
-            } else if (v instanceof Map<?, ?> m) {
-                Object ver = m.get("version");
-                if (ver != null) version = String.valueOf(ver).trim();
-            }
-            
-            // Skip problematic package: hl7.fhir.extensions.r5#4.0.1
-            if ("hl7.fhir.extensions.r5".equals(pkgName) && "4.0.1".equals(version)) {
-                System.out.printf(Locale.ROOT, "Skipping known problematic package from sushi-config: %s@%s%n", pkgName, version);
-                continue;
-            }
-            
-            coords.add((version == null || version.isBlank()) ? pkgName : (pkgName + "@" + version));
-        }
-        return coords;
+        return parseDependencyMap(deps, "sushi-config");
     }
 
     private static List<String> gatherPkgCoordsFromSushi(Path file, String inlineYaml) throws IOException {
@@ -585,14 +671,324 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         return all;
     }
 
-    private static Optional<String> gatherFhirVersionFromSushi(Path file) throws IOException {
-        if (file == null) {
-            return Optional.empty();
+    static List<String> parsePackageJsonDependencies(String jsonText) {
+        if (jsonText == null || jsonText.isBlank()) return List.of();
+        try {
+            Map<String, Object> root = JSON_MAPPER.readValue(jsonText, new TypeReference<>() {});
+            Object depsNode = root.get("dependencies");
+            if (!(depsNode instanceof Map<?, ?> deps)) return List.of();
+            return parseDependencyMap(deps, "package.json");
+        } catch (IOException e) {
+            throw new IllegalArgumentException("Invalid package.json content", e);
         }
-        return parseSushiFhirVersion(Files.readString(file));
     }
 
-    private static Optional<String> parseSushiFhirVersion(String yamlText) {
+    private static List<String> gatherPkgCoordsFromPackageJson(Path packageJsonPath) throws IOException {
+        if (packageJsonPath == null) {
+            return List.of();
+        }
+        return parsePackageJsonDependencies(Files.readString(packageJsonPath));
+    }
+
+    private static List<String> parseDependencyMap(Map<?, ?> deps, String sourceName) {
+        List<String> coords = new ArrayList<>();
+        for (Map.Entry<?, ?> e : deps.entrySet()) {
+            String pkgName = String.valueOf(e.getKey()).trim();
+            if (pkgName.isBlank()) {
+                continue;
+            }
+
+            String version = extractDependencyVersion(e.getValue());
+
+            if (isKnownProblematicPackage(pkgName, version)) {
+                logSkippingKnownProblematicPackage(sourceName, pkgName, version);
+                continue;
+            }
+
+            coords.add((version == null || version.isBlank()) ? pkgName : (pkgName + "@" + version));
+        }
+        return coords;
+    }
+
+    private static String extractDependencyVersion(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof String s) {
+            String version = s.trim();
+            return version.isBlank() ? null : version;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Object ver = map.get("version");
+            if (ver == null) {
+                return null;
+            }
+            String version = String.valueOf(ver).trim();
+            return version.isBlank() ? null : version;
+        }
+        String version = String.valueOf(value).trim();
+        return version.isBlank() ? null : version;
+    }
+
+    static Optional<String> parseCacheVersionFromIni(String iniText) {
+        if (iniText == null || iniText.isBlank()) {
+            return Optional.empty();
+        }
+        String section = "";
+        String[] lines = iniText.split("\\R");
+        for (String rawLine : lines) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || line.startsWith(";") || line.startsWith("#")) {
+                continue;
+            }
+            if (line.startsWith("[") && line.endsWith("]")) {
+                section = line.substring(1, line.length() - 1).trim();
+                continue;
+            }
+            int eqIdx = line.indexOf('=');
+            if (eqIdx < 0) {
+                continue;
+            }
+            String key = line.substring(0, eqIdx).trim();
+            String value = line.substring(eqIdx + 1).trim();
+            if ("cache".equalsIgnoreCase(section) && "version".equalsIgnoreCase(key) && !value.isBlank()) {
+                return Optional.of(value);
+            }
+        }
+        return Optional.empty();
+    }
+
+    static boolean isSupportedCacheVersion(String version) {
+        return EXPECTED_CACHE_METADATA_VERSION.equals(Optional.ofNullable(version).orElse("").trim());
+    }
+
+    static boolean shouldValidateDefaultCacheSafety(Path effectiveCacheDir) {
+        if (effectiveCacheDir == null) {
+            return false;
+        }
+        Path normalizedDefault = defaultCacheDir().toAbsolutePath().normalize();
+        return normalizedDefault.equals(effectiveCacheDir.toAbsolutePath().normalize());
+    }
+
+    private static Optional<String> readCacheVersionFromCacheIni(Path cacheDir) throws IOException {
+        Path iniPath = cacheDir.resolve("packages.ini");
+        if (!Files.exists(iniPath)) {
+            return Optional.empty();
+        }
+        return parseCacheVersionFromIni(Files.readString(iniPath));
+    }
+
+    private static List<Path> findLockFiles(Path cacheDir) throws IOException {
+        List<Path> lockFiles = new ArrayList<>();
+        if (!Files.exists(cacheDir) || !Files.isDirectory(cacheDir)) {
+            return lockFiles;
+        }
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(cacheDir, "*.lock")) {
+            for (Path lock : stream) {
+                lockFiles.add(lock);
+            }
+        }
+        return lockFiles;
+    }
+
+    private static int deleteLockFiles(List<Path> lockFiles) throws IOException {
+        int deleted = 0;
+        for (Path lock : lockFiles) {
+            try {
+                if (Files.deleteIfExists(lock)) {
+                    deleted++;
+                }
+            } catch (IOException e) {
+                throw new IOException("Failed to delete lock file " + lock + " (" + e.getMessage() + ")", e);
+            }
+        }
+        return deleted;
+    }
+
+    static List<String> selectLatestCoordinatesByPackageId(Collection<String> coordinates) {
+        if (coordinates == null || coordinates.isEmpty()) {
+            return List.of();
+        }
+
+        LinkedHashMap<String, String> bestVersionByName = new LinkedHashMap<>();
+        for (String coordinate : coordinates) {
+            ParsedCoordinate parsed = parseCoordinate(coordinate);
+            if (parsed == null || parsed.name().isBlank()) {
+                continue;
+            }
+
+            String existing = bestVersionByName.get(parsed.name());
+            if (existing == null) {
+                bestVersionByName.put(parsed.name(), parsed.version());
+                continue;
+            }
+            if (isCandidateNewer(existing, parsed.version())) {
+                bestVersionByName.put(parsed.name(), parsed.version());
+            }
+        }
+
+        List<String> resolved = new ArrayList<>();
+        for (Map.Entry<String, String> e : bestVersionByName.entrySet()) {
+            String name = e.getKey();
+            String version = e.getValue();
+            resolved.add(version == null || version.isBlank() ? name : name + "@" + version);
+        }
+        return resolved;
+    }
+
+    static String summarizeException(Throwable ex) {
+        if (ex == null) {
+            return "Unknown error";
+        }
+        Throwable root = ex;
+        while (root.getCause() != null) {
+            root = root.getCause();
+        }
+        String msg = root.getMessage();
+        if (msg == null || msg.isBlank()) {
+            msg = ex.getMessage();
+        }
+        if (msg == null || msg.isBlank()) {
+            return root.getClass().getSimpleName();
+        }
+        return msg;
+    }
+
+    private static boolean isCandidateNewer(String existingVersion, String candidateVersion) {
+        if (existingVersion == null || existingVersion.isBlank()) {
+            return candidateVersion != null && !candidateVersion.isBlank();
+        }
+        if (candidateVersion == null || candidateVersion.isBlank()) {
+            return false;
+        }
+        return compareSemVer(candidateVersion, existingVersion) > 0;
+    }
+
+    private static int compareSemVer(String left, String right) {
+        if (left == null || right == null) {
+            return Objects.compare(left, right, Comparator.nullsFirst(String::compareTo));
+        }
+        String[] leftParts = splitVersion(left);
+        String[] rightParts = splitVersion(right);
+
+        int coreCompare = compareCoreVersion(leftParts[0], rightParts[0]);
+        if (coreCompare != 0) {
+            return coreCompare;
+        }
+        return comparePreRelease(leftParts[1], rightParts[1]);
+    }
+
+    private static String[] splitVersion(String version) {
+        String withoutBuild = version.split("\\+", 2)[0];
+        String[] split = withoutBuild.split("-", 2);
+        String core = split[0];
+        String pre = split.length > 1 ? split[1] : null;
+        return new String[]{core, pre};
+    }
+
+    private static int compareCoreVersion(String leftCore, String rightCore) {
+        String[] left = leftCore.split("\\.");
+        String[] right = rightCore.split("\\.");
+        int max = Math.max(left.length, right.length);
+        for (int i = 0; i < max; i++) {
+            String l = i < left.length ? left[i] : "0";
+            String r = i < right.length ? right[i] : "0";
+            int cmp = compareIdentifier(l, r);
+            if (cmp != 0) {
+                return cmp;
+            }
+        }
+        return 0;
+    }
+
+    private static int comparePreRelease(String leftPre, String rightPre) {
+        if (leftPre == null && rightPre == null) {
+            return 0;
+        }
+        if (leftPre == null) {
+            return 1;
+        }
+        if (rightPre == null) {
+            return -1;
+        }
+
+        String[] left = leftPre.split("\\.");
+        String[] right = rightPre.split("\\.");
+        int max = Math.max(left.length, right.length);
+        for (int i = 0; i < max; i++) {
+            if (i >= left.length) {
+                return -1;
+            }
+            if (i >= right.length) {
+                return 1;
+            }
+            int cmp = compareIdentifier(left[i], right[i]);
+            if (cmp != 0) {
+                return cmp;
+            }
+        }
+        return 0;
+    }
+
+    private static int compareIdentifier(String left, String right) {
+        boolean leftNumeric = left.chars().allMatch(Character::isDigit);
+        boolean rightNumeric = right.chars().allMatch(Character::isDigit);
+
+        if (leftNumeric && rightNumeric) {
+            return new BigInteger(left).compareTo(new BigInteger(right));
+        }
+        if (leftNumeric) {
+            return -1;
+        }
+        if (rightNumeric) {
+            return 1;
+        }
+        return left.compareToIgnoreCase(right);
+    }
+
+    private static boolean isKnownProblematicCoordinate(String coordinate) {
+        ParsedCoordinate parsed = parseCoordinate(coordinate);
+        if (parsed == null) {
+            return false;
+        }
+        return isKnownProblematicPackage(parsed.name(), parsed.version());
+    }
+
+    private static boolean isKnownProblematicPackage(String name, String version) {
+        if (name == null || version == null) {
+            return false;
+        }
+        return KNOWN_PROBLEMATIC_PACKAGE_NAME.equals(name.trim())
+                && KNOWN_PROBLEMATIC_PACKAGE_VERSION.equals(version.trim());
+    }
+
+    private static void logSkippingKnownProblematicPackage(String source, String coordinate) {
+        if (source == null || source.isBlank()) {
+            System.out.printf(Locale.ROOT, "Skipping known problematic package: %s%n", coordinate);
+            return;
+        }
+        System.out.printf(Locale.ROOT, "Skipping known problematic package from %s: %s%n", source, coordinate);
+    }
+
+    private static void logSkippingKnownProblematicPackage(String source, String name, String version) {
+        String coord = (version == null || version.isBlank()) ? name : (name + "@" + version);
+        logSkippingKnownProblematicPackage(source, coord);
+    }
+
+    private static Optional<String> gatherFhirVersionFromSushi(Path file, String inlineYaml) throws IOException {
+        if (file != null) {
+            Optional<String> fromFile = parseSushiFhirVersion(Files.readString(file));
+            if (fromFile.isPresent()) {
+                return fromFile;
+            }
+        }
+        if (inlineYaml != null && !inlineYaml.isBlank()) {
+            return parseSushiFhirVersion(inlineYaml);
+        }
+        return Optional.empty();
+    }
+
+    static Optional<String> parseSushiFhirVersion(String yamlText) {
         if (yamlText == null || yamlText.isBlank()) return Optional.empty();
         Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
         Object root = yaml.load(yamlText);
@@ -632,6 +1028,35 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         String fallback = node.toString().trim();
         return fallback.isBlank() ? Optional.empty() : Optional.of(fallback);
     }
+
+    private static ParsedCoordinate parseCoordinate(String coordinate) {
+        if (coordinate == null || coordinate.isBlank()) {
+            return null;
+        }
+        String trimmed = coordinate.trim();
+        int atIdx = trimmed.indexOf('@');
+        int hashIdx = trimmed.indexOf('#');
+        int idx;
+        if (atIdx < 0) {
+            idx = hashIdx;
+        } else if (hashIdx < 0) {
+            idx = atIdx;
+        } else {
+            idx = Math.min(atIdx, hashIdx);
+        }
+
+        if (idx < 0) {
+            return new ParsedCoordinate(trimmed, null);
+        }
+        String name = trimmed.substring(0, idx).trim();
+        String version = trimmed.substring(idx + 1).trim();
+        if (version.isBlank()) {
+            version = null;
+        }
+        return new ParsedCoordinate(name, version);
+    }
+
+    private record ParsedCoordinate(String name, String version) {}
 
     // --- Minimal JSON helpers (avoid full parse when only url/name/id are needed) ---
 
