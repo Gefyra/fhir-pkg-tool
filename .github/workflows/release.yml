@@ -24,7 +24,7 @@ jobs:
         run: mvn -B -DskipTests package
 
       - name: Upload jar artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: fhir-pkg-tool.jar
           path: target/fhir-pkg-tool.jar
@@ -84,7 +84,7 @@ jobs:
           mv "$BIN" "$OUT"
 
       - name: Upload native artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.target }}
           path: target/fhir-pkg-tool-${{ matrix.target }}${{ matrix.ext }}
