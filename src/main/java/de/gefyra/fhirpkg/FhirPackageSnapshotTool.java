@@ -192,7 +192,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     String selectedFhirVersion = selectFhirVersion(sushiFhirVersion, allPkgs);
     SnapshotSupport.FhirRelease release = SnapshotSupport.resolveFhirRelease(selectedFhirVersion);
     SnapshotSupport.SnapshotEngine snapshotEngine = SnapshotSupport.createSnapshotEngine(release,
-        allPkgs);
+        selectedFhirVersion, allPkgs);
 
     PackageStats packageStats = new PackageStats();
     if (profilesDir == null) {

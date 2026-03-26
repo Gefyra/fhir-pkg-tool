@@ -38,6 +38,11 @@
       <artifactId>org.hl7.fhir.r5</artifactId>
       <version>${fhir.core.version}</version>
     </dependency>
+    <dependency>
+      <groupId>ca.uhn.hapi.fhir</groupId>
+      <artifactId>org.hl7.fhir.convertors</artifactId>
+      <version>${fhir.core.version}</version>
+    </dependency>
 
     <!-- CLI Parsing -->
     <dependency>
@@ -76,6 +81,16 @@
       <groupId>org.apache.commons</groupId>
       <artifactId>commons-compress</artifactId>
       <version>1.27.1</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-collections4</artifactId>
+      <version>4.4</version>
+    </dependency>
+    <dependency>
+      <groupId>org.fhir</groupId>
+      <artifactId>ucum</artifactId>
+      <version>1.0.10</version>
     </dependency>
 
     <!-- SLF4J binding for console output -->
