@@ -140,6 +140,9 @@
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                   <mainClass>de.gefyra.fhirpkg.FhirPackageSnapshotTool</mainClass>
+                  <manifestEntries>
+                    <Multi-Release>true</Multi-Release>
+                  </manifestEntries>
                 </transformer>
               </transformers>
             </configuration>
@@ -174,10 +177,10 @@
     </plugins>
   </build>
 
-  <!-- Profile to build a GraalVM native image from the shaded fat-jar.
+  <!-- Profile to build a GraalVM native image from project classes + runtime classpath.
        Usage: mvn -Pnative verify
        Requires: GraalVM with the `native-image` tool available on PATH.
-       The exec plugin calls the native-image executable on the created fat jar.
+       Uses GraalVM native-maven-plugin (more robust with MR-JAR dependencies like sqlite-jdbc).
   -->
   <profiles>
     <profile>
@@ -189,33 +192,26 @@
       <build>
         <plugins>
           <plugin>
-            <groupId>org.codehaus.mojo</groupId>
-            <artifactId>exec-maven-plugin</artifactId>
-            <version>3.0.0</version>
+            <groupId>org.graalvm.buildtools</groupId>
+            <artifactId>native-maven-plugin</artifactId>
+            <version>0.10.6</version>
             <executions>
               <execution>
                 <id>native-image</id>
-                <!-- run in verify to ensure the shaded jar was created in package -->
                 <phase>verify</phase>
                 <goals>
-                  <goal>exec</goal>
+                  <goal>compile-no-fork</goal>
                 </goals>
                 <configuration>
                   <skip>${skipNativeImage}</skip>
-                  <executable>native-image</executable>
-                  <arguments>
-                    <!-- Use the shaded jar produced by the shade plugin -->
-                    <argument>-jar</argument>
-                    <argument>${project.build.directory}/${project.build.finalName}.jar</argument>
-                    <argument>-H:Name=${project.build.finalName}</argument>
-                    <argument>-H:Path=${project.build.directory}</argument>
+                  <imageName>${project.build.finalName}</imageName>
+                  <mainClass>de.gefyra.fhirpkg.FhirPackageSnapshotTool</mainClass>
+                  <buildArgs>
                     <!-- required for package downloads in native mode -->
-                    <argument>--enable-url-protocols=https</argument>
+                    <buildArg>--enable-url-protocols=https</buildArg>
                     <!-- no-fallback avoids generating a fallback image and fails if native-image can't build -->
-                    <argument>--no-fallback</argument>
-                    <!-- allow the user to pass additional options via -Dnative.image.args='...'
-                         (not parsed here — can be expanded later if needed) -->
-                  </arguments>
+                    <buildArg>--no-fallback</buildArg>
+                  </buildArgs>
                 </configuration>
               </execution>
             </executions>
