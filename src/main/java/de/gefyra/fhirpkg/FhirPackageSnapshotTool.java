@@ -202,9 +202,10 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     LocalStats localStats = processLocalProfiles(snapshotEngine, effectiveOutDir);
 
     System.out.printf(Locale.ROOT,
-        "Done: %d SDs found, %d snapshots generated, %d SD files written, %d files copied. Local: %d SDs, %d generated, %d written.%n",
+        "Done: %d SDs found, %d snapshots generated, %d SD files written, %d files copied, %d failed. Local: %d SDs, %d generated, %d written, %d failed.%n",
         packageStats.total, packageStats.generated, packageStats.sdWritten, packageStats.filesCopied,
-        localStats.total, localStats.generated, localStats.written);
+        packageStats.failed, localStats.total, localStats.generated, localStats.written,
+        localStats.failed);
     System.out.printf(Locale.ROOT, "Output directory: %s%n", effectiveOutDir);
     System.out.printf(Locale.ROOT, "Cache directory: %s%n", effectiveCacheDir);
     return 0;
@@ -326,7 +327,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
   List<NpmPackage> loadRequestedAndDependencyPackages(IPackageCacheManager cache,
       List<String> resolvedRequested, Set<Path> knownCacheDirs) {
     List<NpmPackage> allPkgs = new ArrayList<>();
-    Set<String> seenByName = new HashSet<>();
+    Set<String> seenPackageKeys = new HashSet<>();
     for (String coord : resolvedRequested) {
       if (KnownProblematicPackages.isKnownProblematicCoordinate(coord)) {
         KnownProblematicPackages.logSkippingKnownProblematicPackage("requested packages", coord);
@@ -334,7 +335,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
       }
       try {
         NpmPackage p = PackageLoadingSupport.loadPackage(cache, coord, knownCacheDirs);
-        if (seenByName.add(p.name())) {
+        if (seenPackageKeys.add(PackageLoadingSupport.packageKey(p.name(), p.version()))) {
           allPkgs.add(p);
         }
       } catch (Exception e) {
@@ -346,7 +347,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     if (!skipDependencies) {
       for (int i = 0; i < allPkgs.size(); i++) {
         NpmPackage root = allPkgs.get(i);
-        List<NpmPackage> deps = PackageLoadingSupport.loadAllDependencies(cache, root, seenByName,
+        List<NpmPackage> deps = PackageLoadingSupport.loadAllDependencies(cache, root, seenPackageKeys,
             knownCacheDirs);
         allPkgs.addAll(deps);
       }
@@ -406,8 +407,15 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
           boolean hasSnapshot = SNAPSHOT_FIELD.matcher(json).find();
           boolean didGenerate = forceSnapshot || !hasSnapshot;
           if (didGenerate) {
-            json = snapshotEngine.generateSnapshot(json, pretty,
-                profileFields.url(), profileFields.name());
+            try {
+              json = snapshotEngine.generateSnapshot(json, pretty,
+                  profileFields.url(), profileFields.name());
+            } catch (Exception e) {
+              stats.failed++;
+              System.err.printf(Locale.ROOT, "Snapshot generation failed for %s#%s/%s: %s%n",
+                  p.name(), p.version(), resName, summarizeException(e));
+              continue;
+            }
             stats.generated++;
             if (debug) {
               System.out.printf(Locale.ROOT, "Generated snapshot: %s#%s/%s%n", p.name(), p.version(),
@@ -423,6 +431,10 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
           Files.writeString(target, json, StandardOpenOption.CREATE,
               StandardOpenOption.TRUNCATE_EXISTING);
           stats.sdWritten++;
+        } catch (Exception e) {
+          stats.failed++;
+          System.err.printf(Locale.ROOT, "Skip failed package resource %s#%s/%s (%s)%n",
+              p.name(), p.version(), resName, summarizeException(e));
         }
       }
     }
@@ -487,6 +499,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
               System.out.printf(Locale.ROOT, "Generated local snapshot: %s%n", f);
             }
           } catch (Exception e) {
+            stats.failed++;
             System.err.printf(Locale.ROOT, "Snapshot generation failed for %s: %s%n", f,
                 e.getMessage());
             continue;
@@ -504,6 +517,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
               StandardOpenOption.TRUNCATE_EXISTING);
           stats.written++;
         } catch (Exception e) {
+          stats.failed++;
           System.err.printf(Locale.ROOT, "Write failed for %s: %s%n", target, e.getMessage());
         }
       }
@@ -549,11 +563,13 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     int generated;
     int sdWritten;
     int filesCopied;
+    int failed;
   }
 
   private static final class LocalStats {
     int total;
     int generated;
     int written;
+    int failed;
   }
 }

@@ -50,6 +50,27 @@ class FhirPackageSnapshotToolPackageLoadingTest {
         loaded.stream().map(NpmPackage::name).toList());
   }
 
+  @Test
+  void loadRequestedAndDependencyPackages_loadsMultipleVersionsOfSameDependencyPackage()
+      throws Exception {
+    FhirPackageSnapshotTool tool = new FhirPackageSnapshotTool();
+    tool.skipDependencies = false;
+
+    StubCacheManager cache = new StubCacheManager();
+    cache.add(createPackage("root.pkg", "1.0.0", "dep.a#1.0.0", "dep.b#1.0.0"));
+    cache.add(createPackage("dep.a", "1.0.0", "dep.same#1.0.0"));
+    cache.add(createPackage("dep.b", "1.0.0", "dep.same#2.0.0"));
+    cache.add(createPackage("dep.same", "1.0.0"));
+    cache.add(createPackage("dep.same", "2.0.0"));
+
+    List<NpmPackage> loaded = tool.loadRequestedAndDependencyPackages(cache,
+        List.of("root.pkg@1.0.0"), new HashSet<>());
+
+    assertEquals(List.of("root.pkg#1.0.0", "dep.a#1.0.0", "dep.same#1.0.0", "dep.b#1.0.0",
+            "dep.same#2.0.0"),
+        loaded.stream().map(p -> p.name() + "#" + p.version()).toList());
+  }
+
   private static NpmPackage createPackage(String name, String version, String... dependencies)
       throws Exception {
     NpmPackage npmPackage = NpmPackage.empty();

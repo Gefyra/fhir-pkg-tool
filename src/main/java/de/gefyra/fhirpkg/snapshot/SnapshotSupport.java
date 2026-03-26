@@ -78,9 +78,8 @@ public final class SnapshotSupport {
         if (!sd.hasBaseDefinition()) {
           throw new IllegalArgumentException("StructureDefinition has no baseDefinition");
         }
-        org.hl7.fhir.r5.model.StructureDefinition base =
-            context.fetchResource(org.hl7.fhir.r5.model.StructureDefinition.class,
-                sd.getBaseDefinition());
+        org.hl7.fhir.r5.model.StructureDefinition base = resolveBaseStructureDefinition(context,
+            sd.getBaseDefinition());
         if (base == null) {
           throw new IllegalStateException(
               "Base StructureDefinition not found: " + sd.getBaseDefinition());
@@ -121,7 +120,7 @@ public final class SnapshotSupport {
           if (!(parsed instanceof org.hl7.fhir.r5.model.StructureDefinition sd)) {
             continue;
           }
-          String key = structureDefinitionKey(sd.getUrl(), sd.getId());
+          String key = structureDefinitionKey(sd.getUrl(), sd.getVersion(), sd.getId());
           if (key != null && !loadedKeys.add(key)) {
             continue;
           }
@@ -196,12 +195,65 @@ public final class SnapshotSupport {
     versionField.set(context, version);
   }
 
-  private static String structureDefinitionKey(String url, String id) {
+  private static String structureDefinitionKey(String url, String version, String id) {
     if (url != null && !url.isBlank()) {
-      return "url:" + url.trim();
+      String normalizedUrl = url.trim();
+      if (version != null && !version.isBlank()) {
+        return "url:" + normalizedUrl + "|" + version.trim();
+      }
+      return "url:" + normalizedUrl;
     }
     if (id != null && !id.isBlank()) {
-      return "id:" + id.trim();
+      String normalizedId = id.trim();
+      if (version != null && !version.isBlank()) {
+        return "id:" + normalizedId + "|" + version.trim();
+      }
+      return "id:" + normalizedId;
+    }
+    return null;
+  }
+
+  private static org.hl7.fhir.r5.model.StructureDefinition resolveBaseStructureDefinition(
+      org.hl7.fhir.r5.context.SimpleWorkerContext context, String baseDefinition) {
+    if (baseDefinition == null || baseDefinition.isBlank()) {
+      return null;
+    }
+    org.hl7.fhir.r5.model.StructureDefinition direct = context.fetchResource(
+        org.hl7.fhir.r5.model.StructureDefinition.class, baseDefinition);
+    if (direct != null) {
+      return direct;
+    }
+
+    int splitIdx = baseDefinition.indexOf('|');
+    if (splitIdx < 0) {
+      return null;
+    }
+
+    String canonical = baseDefinition.substring(0, splitIdx).trim();
+    String version = baseDefinition.substring(splitIdx + 1).trim();
+    if (!canonical.isBlank() && !version.isBlank()) {
+      List<org.hl7.fhir.r5.model.StructureDefinition> versions =
+          context.fetchResourceVersionsByTypeAndUrl(
+              org.hl7.fhir.r5.model.StructureDefinition.class, canonical);
+      if (versions != null) {
+        for (org.hl7.fhir.r5.model.StructureDefinition candidate : versions) {
+          if (version.equals(candidate.getVersion())) {
+            return candidate;
+          }
+        }
+      }
+    }
+
+    if (!canonical.isBlank()) {
+      org.hl7.fhir.r5.model.StructureDefinition fallback = context.fetchResource(
+          org.hl7.fhir.r5.model.StructureDefinition.class, canonical);
+      if (fallback != null && !version.isBlank() && fallback.hasVersion()
+          && !version.equals(fallback.getVersion())) {
+        System.err.printf(Locale.ROOT,
+            "Warning: Base StructureDefinition version mismatch for %s; requested '%s', using '%s'.%n",
+            canonical, version, fallback.getVersion());
+      }
+      return fallback;
     }
     return null;
   }

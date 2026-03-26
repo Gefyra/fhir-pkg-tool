@@ -59,7 +59,7 @@ public final class PackageLoadingSupport {
   }
 
   public static List<NpmPackage> loadAllDependencies(IPackageCacheManager cache, NpmPackage root,
-      Set<String> seenByName, Set<Path> knownCacheDirs) {
+      Set<String> seenPackageKeys, Set<Path> knownCacheDirs) {
     List<String> deps = root.dependencies();
     if (deps == null || deps.isEmpty()) {
       return List.of();
@@ -81,7 +81,7 @@ public final class PackageLoadingSupport {
         continue;
       }
 
-      if (seenByName.contains(name)) {
+      if (version != null && !version.isBlank() && seenPackageKeys.contains(packageKey(name, version))) {
         continue;
       }
 
@@ -89,10 +89,13 @@ public final class PackageLoadingSupport {
         NpmPackage p = (version == null || version.isBlank())
             ? cache.loadPackage(name)
             : cache.loadPackage(name, version);
-        seenByName.add(name);
+        String loadedKey = packageKey(p.name(), p.version());
+        if (!seenPackageKeys.add(loadedKey)) {
+          continue;
+        }
         notePackageCacheLocation(p, knownCacheDirs);
         out.add(p);
-        out.addAll(loadAllDependencies(cache, p, seenByName, knownCacheDirs));
+        out.addAll(loadAllDependencies(cache, p, seenPackageKeys, knownCacheDirs));
       } catch (Exception e) {
         String coordinate = version == null || version.isBlank() ? name : name + "#" + version;
         System.err.printf(Locale.ROOT, "Failed to install dependency %s (%s). Continuing.%n",
@@ -100,6 +103,12 @@ public final class PackageLoadingSupport {
       }
     }
     return out;
+  }
+
+  public static String packageKey(String name, String version) {
+    String normalizedName = Optional.ofNullable(name).orElse("").trim();
+    String normalizedVersion = Optional.ofNullable(version).orElse("").trim();
+    return normalizedName + "#" + normalizedVersion;
   }
 
   private static void notePackageCacheLocation(NpmPackage pkg, Set<Path> knownCacheDirs) {
