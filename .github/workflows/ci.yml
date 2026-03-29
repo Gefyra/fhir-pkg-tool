@@ -27,7 +27,7 @@ jobs:
         run: ls -la target || true
 
       - name: Upload fat jar
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: fhir-pkg-tool.jar
           path: target/fhir-pkg-tool.jar
