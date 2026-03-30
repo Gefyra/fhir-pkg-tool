@@ -12,7 +12,7 @@
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <fhir.core.version>6.9.1</fhir.core.version>
+    <fhir.core.version>6.9.4</fhir.core.version>
     <junit.version>5.10.2</junit.version>
   </properties>
 
