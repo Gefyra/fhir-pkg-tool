@@ -211,6 +211,10 @@
                     <buildArg>--enable-url-protocols=https</buildArg>
                     <!-- no-fallback avoids generating a fallback image and fails if native-image can't build -->
                     <buildArg>--no-fallback</buildArg>
+                    <!-- FHIR core i18n (org.hl7.fhir.utilities I18nBase) loads ResourceBundle "Messages"
+                         during snapshot generation. ResourceBundles are not auto-included in native images,
+                         which otherwise fails with: "Can't find bundle for base name Messages, locale en_US". -->
+                    <buildArg>-H:IncludeResourceBundles=Messages</buildArg>
                   </buildArgs>
                 </configuration>
               </execution>
