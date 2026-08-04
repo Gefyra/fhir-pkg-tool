@@ -54,6 +54,10 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
       description = "FHIR NPM packages (repeatable or comma-separated; e.g. hl7.fhir.r4.core@4.0.1,hl7.fhir.us.core@6.1.0)")
   List<String> pkgCoordinates = new ArrayList<>();
 
+  @Option(names = {"--package-file", "--file"},
+      description = "Local FHIR package tarball(s) (*.tgz) to install into the cache (repeatable; id/version are read from the package)")
+  List<Path> packageFiles = new ArrayList<>();
+
   @Option(names = {
       "--sushi-deps-str"}, description = "YAML block (as string) from sushi-config.yaml with 'dependencies:'")
   String sushiDepsStr;
@@ -110,6 +114,14 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
       "--repair-lock-files"}, description = "Delete '*.lock' files in effective cache directory before package loading")
   boolean repairLockFiles = false;
 
+  @Option(names = {
+      "--no-auto-core"}, description = "Do NOT automatically load the FHIR core package as snapshot context when it is missing")
+  boolean noAutoCore = false;
+
+  @Option(names = {
+      "--ignore-snapshot-errors"}, description = "Exit with 0 even when snapshots could not be generated (default: exit code 6)")
+  boolean ignoreSnapshotErrors = false;
+
   @Option(names = {"--debug"}, description = "Print stack traces for execution errors")
   boolean debug = false;
 
@@ -161,17 +173,20 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     List<String> resolvedRequested = selectLatestCoordinatesByPackageId(requested);
     printRequestedPackages(resolvedRequested);
 
+    List<Path> localPackageFiles = packageFiles == null ? List.of() : packageFiles;
+    printLocalPackageFiles(localPackageFiles);
+
     Optional<String> sushiFhirVersion = DependencyInputParser.gatherFhirVersionFromSushi(
         sushiDepsFile, sushiDepsStr);
 
-    if (resolvedRequested.isEmpty() && profilesDir == null) {
+    if (resolvedRequested.isEmpty() && localPackageFiles.isEmpty() && profilesDir == null) {
       if (sushiDepsFile != null || sushiDepsStr != null || packageJsonFile != null) {
         System.out.println(
             "No dependencies found in provided dependency sources, skipping package installation.");
         return 0;
       }
       System.err.println(
-          "No packages specified. Use -p, --sushi-deps-*, or --package-json-file (or provide --profiles-dir). Aborting.");
+          "No packages specified. Use -p, --package-file, --sushi-deps-*, or --package-json-file (or provide --profiles-dir). Aborting.");
       return 2;
     }
 
@@ -180,7 +195,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     Set<Path> knownCacheDirs = PackageLoadingSupport.initKnownCacheDirs(effectiveCacheDir);
 
     List<NpmPackage> allPkgs = loadRequestedAndDependencyPackages(cache, resolvedRequested,
-        knownCacheDirs);
+        localPackageFiles, knownCacheDirs);
     if (allPkgs.isEmpty()) {
       if (profilesDir == null) {
         System.err.println("No packages loaded – aborting.");
@@ -191,8 +206,10 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
 
     String selectedFhirVersion = selectFhirVersion(sushiFhirVersion, allPkgs);
     SnapshotSupport.FhirRelease release = SnapshotSupport.resolveFhirRelease(selectedFhirVersion);
+    List<NpmPackage> contextPkgs = ensureCorePackageInContext(cache, allPkgs, release,
+        knownCacheDirs);
     SnapshotSupport.SnapshotEngine snapshotEngine = SnapshotSupport.createSnapshotEngine(release,
-        selectedFhirVersion, allPkgs);
+        selectedFhirVersion, contextPkgs);
 
     PackageStats packageStats = new PackageStats();
     if (profilesDir == null) {
@@ -202,11 +219,26 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     LocalStats localStats = processLocalProfiles(snapshotEngine, effectiveOutDir);
 
     System.out.printf(Locale.ROOT,
-        "Done: %d SDs found, %d snapshots generated, %d SD files written, %d files copied. Local: %d SDs, %d generated, %d written.%n",
-        packageStats.total, packageStats.generated, packageStats.sdWritten, packageStats.filesCopied,
-        localStats.total, localStats.generated, localStats.written);
+        "Done: %d SDs found, %d snapshots generated, %d failed, %d SD files written, %d files copied. Local: %d SDs, %d generated, %d failed, %d written.%n",
+        packageStats.total, packageStats.generated, packageStats.failed, packageStats.sdWritten,
+        packageStats.filesCopied,
+        localStats.total, localStats.generated, localStats.failed, localStats.written);
     System.out.printf(Locale.ROOT, "Output directory: %s%n", effectiveOutDir);
     System.out.printf(Locale.ROOT, "Cache directory: %s%n", effectiveCacheDir);
+
+    int snapshotFailures = packageStats.failed + localStats.failed;
+    if (snapshotFailures > 0) {
+      if (ignoreSnapshotErrors) {
+        System.err.printf(Locale.ROOT,
+            "Warning: %d snapshot(s) could not be generated; ignored due to --ignore-snapshot-errors.%n",
+            snapshotFailures);
+        return 0;
+      }
+      System.err.printf(Locale.ROOT,
+          "Error: %d snapshot(s) could not be generated (see messages above). Use --ignore-snapshot-errors to exit 0 anyway.%n",
+          snapshotFailures);
+      return 6;
+    }
     return 0;
   }
 
@@ -316,6 +348,16 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     }
   }
 
+  private void printLocalPackageFiles(List<Path> localPackageFiles) {
+    if (localPackageFiles.isEmpty()) {
+      return;
+    }
+    System.out.println("Local package files:");
+    for (Path file : localPackageFiles) {
+      System.out.println("  - " + file.toAbsolutePath().normalize());
+    }
+  }
+
   private IPackageCacheManager buildCache(Path effectiveCacheDir) throws Exception {
     FilesystemPackageCacheManager.Builder cacheBuilder = new FilesystemPackageCacheManager.Builder()
         .withCacheFolder(effectiveCacheDir.toString())
@@ -325,8 +367,29 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
 
   List<NpmPackage> loadRequestedAndDependencyPackages(IPackageCacheManager cache,
       List<String> resolvedRequested, Set<Path> knownCacheDirs) {
+    return loadRequestedAndDependencyPackages(cache, resolvedRequested, List.of(), knownCacheDirs);
+  }
+
+  List<NpmPackage> loadRequestedAndDependencyPackages(IPackageCacheManager cache,
+      List<String> resolvedRequested, List<Path> localPackageFiles, Set<Path> knownCacheDirs) {
     List<NpmPackage> allPkgs = new ArrayList<>();
     Set<String> seenByName = new HashSet<>();
+
+    // Local tarballs win over registry coordinates with the same package id.
+    for (Path file : localPackageFiles) {
+      try {
+        NpmPackage p = PackageLoadingSupport.installPackageFromFile(cache, file, knownCacheDirs);
+        System.out.printf(Locale.ROOT, "Installed local package file %s as %s#%s%n", file, p.name(),
+            p.version());
+        if (seenByName.add(p.name())) {
+          allPkgs.add(p);
+        }
+      } catch (Exception e) {
+        System.err.printf(Locale.ROOT, "Failed to install package file %s (%s). Continuing.%n",
+            file, summarizeException(e));
+      }
+    }
+
     for (String coord : resolvedRequested) {
       if (KnownProblematicPackages.isKnownProblematicCoordinate(coord)) {
         KnownProblematicPackages.logSkippingKnownProblematicPackage("requested packages", coord);
@@ -352,6 +415,51 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
       }
     }
     return allPkgs;
+  }
+
+  /**
+   * The snapshot context is built exclusively from the loaded packages, so without a core package
+   * every profile that derives from a base resource fails. Returns {@code allPkgs} plus the matching
+   * core package, which is used as context only and is not written to the output directory.
+   */
+  List<NpmPackage> ensureCorePackageInContext(IPackageCacheManager cache, List<NpmPackage> allPkgs,
+      SnapshotSupport.FhirRelease release, Set<Path> knownCacheDirs) {
+    SnapshotSupport.CoreCoordinate core = SnapshotSupport.coreCoordinate(release);
+    for (NpmPackage p : allPkgs) {
+      if (core.id().equals(p.name())) {
+        return allPkgs;
+      }
+    }
+
+    for (NpmPackage p : allPkgs) {
+      if (SnapshotSupport.isCorePackage(p.name())) {
+        System.err.printf(Locale.ROOT,
+            "Warning: loaded core package %s#%s does not match the %s snapshot context (expected %s).%n",
+            p.name(), p.version(), release, core.id());
+      }
+    }
+
+    if (noAutoCore) {
+      System.out.printf(Locale.ROOT,
+          "No %s among the loaded packages; skipping auto-load due to --no-auto-core.%n", core.id());
+      return allPkgs;
+    }
+
+    System.out.printf(Locale.ROOT,
+        "No %s among the loaded packages; loading %s as snapshot context.%n", core.id(),
+        core.asCoordinate());
+    try {
+      NpmPackage corePkg = PackageLoadingSupport.loadPackage(cache, core.asCoordinate(),
+          knownCacheDirs);
+      List<NpmPackage> withCore = new ArrayList<>(allPkgs);
+      withCore.add(corePkg);
+      return withCore;
+    } catch (Exception e) {
+      System.err.printf(Locale.ROOT,
+          "Failed to load %s as snapshot context (%s). Snapshots may fail.%n", core.asCoordinate(),
+          summarizeException(e));
+      return allPkgs;
+    }
   }
 
   private String selectFhirVersion(Optional<String> sushiFhirVersion, List<NpmPackage> allPkgs) {
@@ -406,12 +514,21 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
           boolean hasSnapshot = SNAPSHOT_FIELD.matcher(json).find();
           boolean didGenerate = forceSnapshot || !hasSnapshot;
           if (didGenerate) {
-            json = snapshotEngine.generateSnapshot(json, pretty,
-                profileFields.url(), profileFields.name());
-            stats.generated++;
-            if (debug) {
-              System.out.printf(Locale.ROOT, "Generated snapshot: %s#%s/%s%n", p.name(), p.version(),
-                  resName);
+            try {
+              json = snapshotEngine.generateSnapshot(json, pretty,
+                  profileFields.url(), profileFields.name());
+              stats.generated++;
+              if (debug) {
+                System.out.printf(Locale.ROOT, "Generated snapshot: %s#%s/%s%n", p.name(),
+                    p.version(), resName);
+              }
+            } catch (Exception e) {
+              // Keep going so a single unbuildable profile does not hide the state of all others.
+              stats.failed++;
+              didGenerate = false;
+              System.err.printf(Locale.ROOT,
+                  "Snapshot generation failed for %s#%s/%s (%s). Keeping the resource unchanged.%n",
+                  p.name(), p.version(), resName, summarizeException(e));
             }
           }
 
@@ -487,6 +604,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
               System.out.printf(Locale.ROOT, "Generated local snapshot: %s%n", f);
             }
           } catch (Exception e) {
+            stats.failed++;
             System.err.printf(Locale.ROOT, "Snapshot generation failed for %s: %s%n", f,
                 e.getMessage());
             continue;
@@ -547,6 +665,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
   private static final class PackageStats {
     int total;
     int generated;
+    int failed;
     int sdWritten;
     int filesCopied;
   }
@@ -554,6 +673,7 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
   private static final class LocalStats {
     int total;
     int generated;
+    int failed;
     int written;
   }
 }

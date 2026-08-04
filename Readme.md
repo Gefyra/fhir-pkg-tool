@@ -12,6 +12,7 @@ A small CLI tool that downloads FHIR NPM packages from the registry, resolves re
 
 ## Features
 - Multiple packages via `-p` (also comma-separated)
+- Local package tarballs via `--package-file` (equivalent to `fhir install <file.tgz> --file`)
 - Dependencies from `sushi-config.yaml` (file or YAML string) – supports both Sushi structures
 - Dependencies from `package.json` via `dependencies` (ignores `devDependencies`)
 - Automatic FHIR context detection (R4, R4B, R5; DSTU3 fallback)
@@ -50,6 +51,15 @@ YAML
 java -jar target/fhir-pkg-tool.jar   --package-json-file ./package.json   -o ./out/from-package-json
 ```
 
+**Install a package from a local tarball (like `fhir install <file> --file`):**
+```bash
+java -jar target/fhir-pkg-tool.jar   --package-file ./packages/molit-service.fhir.vitu-0.1.20.tgz
+```
+Notes:
+- Package id and version are taken from the tarball's own `package.json`; the package is installed into the cache as `<packageId>#<version>`.
+- Can be repeated and combined with `-p`/`--sushi-deps-*`; a local tarball wins over a registry package with the same id.
+- Dependencies of the local package are resolved from the registry unless `--skip-deps` is given.
+
 **Always rebuild snapshots:**
 ```bash
 java -jar target/fhir-pkg-tool.jar   --sushi-deps-file ./sushi-config.yaml   --force-snapshot
@@ -77,6 +87,7 @@ Notes:
 ## CLI Options
 
 - `-p, --package`: One or more package coordinates (`name@version`). Comma-separated allowed, can be repeated.
+- `--package-file, --file`: Path to a local package tarball (`*.tgz`) that is installed into the cache. Repeatable. Package id and version are read from the tarball's `package.json`.
 - `--sushi-deps-file`: Path to a `sushi-config.yaml` (dependencies are read).
 - `--sushi-deps-str`: Inline YAML block containing `dependencies:`.
 - `--package-json-file`: Path to a `package.json` file. Only `dependencies` are used (`devDependencies` are ignored).
@@ -84,6 +95,8 @@ Notes:
 - `--repair-lock-files`: Deletes `*.lock` files in the default cache directory before package loading.
 - `--registry`: Package registry URL (default: `https://packages.fhir.org`).
 - `--skip-deps`: Do not auto-load transitive dependencies.
+- `--no-auto-core`: Do not automatically load the matching FHIR core package as snapshot context when it is missing from the resolved packages.
+- `--ignore-snapshot-errors`: Exit with 0 even when snapshots failed (default: exit code 6).
 - `--overwrite`: Overwrite existing files in the output (both copied and snapshotted).
 - `--pretty`: Pretty-print JSON output for rewritten StructureDefinitions (default: true).
 - `--force-snapshot`: Always regenerate snapshots even if a snapshot exists.

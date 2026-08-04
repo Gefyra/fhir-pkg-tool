@@ -2,6 +2,7 @@ package de.gefyra.fhirpkg;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+import de.gefyra.fhirpkg.snapshot.SnapshotSupport;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.HashMap;
@@ -48,6 +49,58 @@ class FhirPackageSnapshotToolPackageLoadingTest {
 
     assertEquals(List.of("root.pkg", "dep.a", "dep.c"),
         loaded.stream().map(NpmPackage::name).toList());
+  }
+
+  @Test
+  void ensureCorePackageInContext_addsMatchingCoreWhenMissing() throws Exception {
+    FhirPackageSnapshotTool tool = new FhirPackageSnapshotTool();
+    StubCacheManager cache = new StubCacheManager();
+    cache.add(createPackage("hl7.fhir.r4.core", "4.0.1"));
+
+    List<NpmPackage> result = tool.ensureCorePackageInContext(cache,
+        List.of(createPackage("my.ig", "1.0.0")), SnapshotSupport.FhirRelease.R4, new HashSet<>());
+
+    assertEquals(List.of("my.ig", "hl7.fhir.r4.core"),
+        result.stream().map(NpmPackage::name).toList());
+  }
+
+  @Test
+  void ensureCorePackageInContext_keepsPackagesWhenCoreAlreadyPresent() throws Exception {
+    FhirPackageSnapshotTool tool = new FhirPackageSnapshotTool();
+    StubCacheManager cache = new StubCacheManager();
+    List<NpmPackage> input = List.of(createPackage("hl7.fhir.r5.core", "5.0.0"),
+        createPackage("my.ig", "1.0.0"));
+
+    List<NpmPackage> result = tool.ensureCorePackageInContext(cache, input,
+        SnapshotSupport.FhirRelease.R5, new HashSet<>());
+
+    assertEquals(List.of("hl7.fhir.r5.core", "my.ig"),
+        result.stream().map(NpmPackage::name).toList());
+  }
+
+  @Test
+  void ensureCorePackageInContext_respectsNoAutoCore() throws Exception {
+    FhirPackageSnapshotTool tool = new FhirPackageSnapshotTool();
+    tool.noAutoCore = true;
+    StubCacheManager cache = new StubCacheManager();
+    cache.add(createPackage("hl7.fhir.r4.core", "4.0.1"));
+
+    List<NpmPackage> result = tool.ensureCorePackageInContext(cache,
+        List.of(createPackage("my.ig", "1.0.0")), SnapshotSupport.FhirRelease.R4, new HashSet<>());
+
+    assertEquals(List.of("my.ig"), result.stream().map(NpmPackage::name).toList());
+  }
+
+  @Test
+  void ensureCorePackageInContext_continuesWhenCoreCannotBeLoaded() throws Exception {
+    FhirPackageSnapshotTool tool = new FhirPackageSnapshotTool();
+    StubCacheManager cache = new StubCacheManager();
+    cache.fail("hl7.fhir.r4.core#4.0.1");
+
+    List<NpmPackage> result = tool.ensureCorePackageInContext(cache,
+        List.of(createPackage("my.ig", "1.0.0")), SnapshotSupport.FhirRelease.R4, new HashSet<>());
+
+    assertEquals(List.of("my.ig"), result.stream().map(NpmPackage::name).toList());
   }
 
   private static NpmPackage createPackage(String name, String version, String... dependencies)

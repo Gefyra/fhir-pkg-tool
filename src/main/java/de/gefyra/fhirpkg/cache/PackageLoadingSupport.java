@@ -3,6 +3,7 @@ package de.gefyra.fhirpkg.cache;
 import de.gefyra.fhirpkg.common.ExceptionSummary;
 import de.gefyra.fhirpkg.deps.KnownProblematicPackages;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -40,6 +41,37 @@ public final class PackageLoadingSupport {
           e.getMessage());
     }
     return known;
+  }
+
+  /**
+   * Installs a FHIR NPM package from a local {@code .tgz} file into the package cache, the same way
+   * {@code fhir install <file> --file} does. Package id and version are taken from the package's own
+   * {@code package.json}.
+   */
+  public static NpmPackage installPackageFromFile(IPackageCacheManager cache, Path packageFile,
+      Set<Path> knownCacheDirs) throws IOException {
+    Path file = packageFile.toAbsolutePath().normalize();
+    if (!Files.isRegularFile(file)) {
+      throw new IOException("Package file does not exist: " + file);
+    }
+
+    String name;
+    String version;
+    try (InputStream in = Files.newInputStream(file)) {
+      NpmPackage probe = NpmPackage.fromPackage(in, file.toString());
+      name = probe.name();
+      version = probe.version();
+    }
+    if (name == null || name.isBlank() || version == null || version.isBlank()) {
+      throw new IOException("package.json in " + file + " has no usable name/version");
+    }
+
+    NpmPackage installed;
+    try (InputStream in = Files.newInputStream(file)) {
+      installed = cache.addPackageToCache(name, version, in, file.toString());
+    }
+    notePackageCacheLocation(installed, knownCacheDirs);
+    return installed;
   }
 
   public static NpmPackage loadPackage(IPackageCacheManager cache, String coordinate,
