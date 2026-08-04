@@ -1,0 +1,13 @@
+{
+  "bundles": [
+    {
+      "name": "Messages",
+      "locales": ["en", "de"]
+    }
+  ],
+  "resources": [
+    {
+      "glob": "Messages*.properties"
+    }
+  ]
+}
