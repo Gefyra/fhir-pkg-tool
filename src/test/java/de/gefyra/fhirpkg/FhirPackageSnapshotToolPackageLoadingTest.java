@@ -124,5 +124,25 @@ class FhirPackageSnapshotToolPackageLoadingTest {
     public String getPackageUrl(String canonicalUrl) {
       throw new UnsupportedOperationException();
     }
+
+    @Override
+    public String getLatestVersion(String id, boolean useCache) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public String getLatestVersion(String id, String majorMinorVersion) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public NpmPackage loadPackageFromCacheOnly(String id) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public NpmPackage loadPackageFromCacheOnly(String id, String version) {
+      throw new UnsupportedOperationException();
+    }
   }
 }
