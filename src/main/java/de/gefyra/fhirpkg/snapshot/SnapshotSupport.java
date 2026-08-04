@@ -25,6 +25,33 @@ public final class SnapshotSupport {
     R5
   }
 
+  /** Coordinates of the FHIR core package that provides the base definitions for a release. */
+  public record CoreCoordinate(String id, String version) {
+
+    public String asCoordinate() {
+      return id + "@" + version;
+    }
+  }
+
+  public static CoreCoordinate coreCoordinate(FhirRelease release) {
+    return switch (release) {
+      case R4 -> new CoreCoordinate("hl7.fhir.r4.core", "4.0.1");
+      case R4B -> new CoreCoordinate("hl7.fhir.r4b.core", "4.3.0");
+      case R5 -> new CoreCoordinate("hl7.fhir.r5.core", "5.0.0");
+    };
+  }
+
+  public static boolean isCorePackage(String packageId) {
+    if (packageId == null || packageId.isBlank()) {
+      return false;
+    }
+    try {
+      return VersionUtilities.isCorePackage(packageId);
+    } catch (Exception e) {
+      return false;
+    }
+  }
+
   public interface SnapshotEngine {
 
     String generateSnapshot(String json, boolean pretty, String profileUrl, String profileName)
@@ -130,6 +157,12 @@ public final class SnapshotSupport {
           } catch (org.hl7.fhir.exceptions.DefinitionException ignored) {
             // Duplicates across packages are expected for some canonicals.
           }
+        } catch (Exception e) {
+          // A resource that cannot be parsed as `release` (e.g. a package built for a different
+          // FHIR version) must not abort the whole run - it just stays out of the context.
+          System.err.printf(Locale.ROOT,
+              "Skipping %s#%s/%s in snapshot context (%s: %s)%n", pkg.name(), pkg.version(), resName,
+              e.getClass().getSimpleName(), e.getMessage());
         }
       }
     }
