@@ -7,7 +7,7 @@
   ],
   "resources": [
     {
-      "glob": "Messages*.properties"
+      "pattern": "Messages(_[a-zA-Z0-9_-]+)?\\.properties"
     }
   ]
 }
