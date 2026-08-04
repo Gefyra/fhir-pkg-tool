@@ -24,7 +24,7 @@ jobs:
         run: mvn -B -DskipTests package
 
       - name: Upload jar artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: fhir-pkg-tool.jar
           path: target/fhir-pkg-tool.jar
@@ -54,7 +54,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Set up GraalVM JDK 21
         uses: graalvm/setup-graalvm@v1
@@ -84,7 +84,7 @@ jobs:
           mv "$BIN" "$OUT"
 
       - name: Upload native artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.target }}
           path: target/fhir-pkg-tool-${{ matrix.target }}${{ matrix.ext }}
@@ -100,12 +100,12 @@ jobs:
 
     steps:
       - name: Download all build artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: dist
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}

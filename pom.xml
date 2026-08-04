@@ -13,7 +13,7 @@
     <maven.compiler.target>21</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <fhir.core.version>6.9.4</fhir.core.version>
-    <junit.version>5.10.2</junit.version>
+    <junit.version>6.0.3</junit.version>
   </properties>
 
   <dependencies>
@@ -62,13 +62,13 @@
     <dependency>
       <groupId>org.yaml</groupId>
       <artifactId>snakeyaml</artifactId>
-      <version>2.5</version>
+      <version>2.6</version>
     </dependency>
 
     <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
-      <version>2.17.2</version>
+      <version>2.21.2</version>
     </dependency>
 
     <dependency>
@@ -80,7 +80,7 @@
     <dependency>
       <groupId>org.apache.commons</groupId>
       <artifactId>commons-compress</artifactId>
-      <version>1.27.1</version>
+      <version>1.28.0</version>
     </dependency>
     <dependency>
       <groupId>org.apache.commons</groupId>
@@ -211,6 +211,10 @@
                     <buildArg>--enable-url-protocols=https</buildArg>
                     <!-- no-fallback avoids generating a fallback image and fails if native-image can't build -->
                     <buildArg>--no-fallback</buildArg>
+                    <!-- FHIR core i18n (org.hl7.fhir.utilities I18nBase) loads ResourceBundle "Messages"
+                         during snapshot generation. ResourceBundles are not auto-included in native images,
+                         which otherwise fails with: "Can't find bundle for base name Messages, locale en_US". -->
+                    <buildArg>-H:IncludeResourceBundles=Messages</buildArg>
                   </buildArgs>
                 </configuration>
               </execution>
