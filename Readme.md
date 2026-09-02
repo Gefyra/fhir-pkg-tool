@@ -13,6 +13,7 @@ A small CLI tool that downloads FHIR NPM packages from the registry, resolves re
 ## Features
 - Multiple packages via `-p` (also comma-separated)
 - Local package tarballs via `--package-file` (equivalent to `fhir install <file.tgz> --file`)
+- Reinstall of already cached packages via `--force-install`, from the registry or from a local tarball
 - Dependencies from `sushi-config.yaml` (file or YAML string) – supports both Sushi structures
 - Dependencies from `package.json` via `dependencies` (ignores `devDependencies`)
 - Automatic FHIR context detection (R4, R4B, R5; DSTU3 fallback)
@@ -58,6 +59,7 @@ java -jar target/fhir-pkg-tool.jar   --package-file ./packages/molit-service.fhi
 Notes:
 - Package id and version are taken from the tarball's own `package.json`; the package is installed into the cache as `<packageId>#<version>`.
 - Can be repeated and combined with `-p`/`--sushi-deps-*`; a local tarball wins over a registry package with the same id.
+- If `<packageId>#<version>` is already in the cache, the cached copy is kept and the tarball is ignored (the tool says so). Use `--force-install` to drop the cached copy and install the tarball instead.
 - Dependencies of the local package are resolved from the registry unless `--skip-deps` is given.
 
 **Always rebuild snapshots:**
@@ -84,10 +86,25 @@ Notes:
 - Snapshot generation respects `--force-snapshot`, `--overwrite`, and `--pretty`.
 - Bei Nutzung von `--sushi-deps-file` wird die dort hinterlegte `fhirVersion` für den Kontext herangezogen; ohne Sushi-Datei übernimmt das erste geladene Paket die Wahl bzw. fällt das Tool auf R5 zurück.
 
+**Reinstall a package that was republished under the same version:**
+```bash
+java -jar target/fhir-pkg-tool.jar   -p de.medizininformatikinitiative.kerndatensatz.labor@2027.0.0-ballot.rc1   --force-install
+```
+The cache keys packages by `<packageId>#<version>`, so a package that is rebuilt without a version bump (a ballot RC, a nightly IG build) is never picked up again: the cached copy wins and the tool reports that it ignored the newer one. `--force-install` drops the cached copy first.
+
+Notes:
+- Works for both sources: a registry package (`-p`) is downloaded again, a local tarball (`--package-file`) is extracted again.
+- Applies only to the packages you ask for. Dependencies and the auto-loaded FHIR core package keep using the cache, so a forced run does not re-download the whole tree.
+- Needs an explicit version (`name@version`); without one there is no single cache entry to drop and the tool says so.
+- `current` and `dev` are always refreshed anyway, with or without the flag.
+- For `-p`, the cached copy is deleted before the package is fetched again — if that download fails, the package stays uninstalled until the next successful run. `--package-file` has no such risk, the tarball is local.
+- Not to be confused with `--force-snapshot`, which regenerates snapshots for packages that are already installed.
+
 ## CLI Options
 
 - `-p, --package`: One or more package coordinates (`name@version`). Comma-separated allowed, can be repeated.
 - `--package-file, --file`: Path to a local package tarball (`*.tgz`) that is installed into the cache. Repeatable. Package id and version are read from the tarball's `package.json`.
+- `--force-install`: Reinstall the packages you asked for even when they are already cached — both registry packages (`-p`, re-downloaded) and local tarballs (`--package-file`, re-extracted). Without it, an existing `<packageId>#<version>` in the cache is used as-is.
 - `--sushi-deps-file`: Path to a `sushi-config.yaml` (dependencies are read).
 - `--sushi-deps-str`: Inline YAML block containing `dependencies:`.
 - `--package-json-file`: Path to a `package.json` file. Only `dependencies` are used (`devDependencies` are ignored).

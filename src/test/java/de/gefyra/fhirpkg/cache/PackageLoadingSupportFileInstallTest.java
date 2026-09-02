@@ -1,22 +1,20 @@
 package de.gefyra.fhirpkg.cache;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
 
-import java.util.zip.GZIPOutputStream;
-import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
-import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.hl7.fhir.utilities.json.model.JsonObject;
+import org.hl7.fhir.utilities.npm.FilesystemPackageCacheManager;
 import org.hl7.fhir.utilities.npm.IPackageCacheManager;
 import org.hl7.fhir.utilities.npm.NpmPackage;
 import org.junit.jupiter.api.Test;
@@ -24,14 +22,18 @@ import org.junit.jupiter.api.io.TempDir;
 
 class PackageLoadingSupportFileInstallTest {
 
+  private static final String PKG_ID = "molit-service.fhir.vitu";
+  private static final String PKG_VERSION = "0.1.20";
+
   @Test
   void installPackageFromFile_readsIdAndVersionFromTarballAndAddsItToCache(@TempDir Path tempDir)
       throws Exception {
-    Path tgz = writePackageTarball(tempDir.resolve("molit-service.fhir.vitu-0.1.20.tgz"),
+    Path tgz = TestPackageTarballs.write(tempDir.resolve("molit-service.fhir.vitu-0.1.20.tgz"),
         "molit-service.fhir.vitu", "0.1.20");
 
     RecordingCacheManager cache = new RecordingCacheManager();
-    NpmPackage installed = PackageLoadingSupport.installPackageFromFile(cache, tgz, new HashSet<>());
+    NpmPackage installed =
+        PackageLoadingSupport.installPackageFromFile(cache, tgz, new HashSet<>(), false);
 
     assertEquals("molit-service.fhir.vitu", cache.id);
     assertEquals("0.1.20", cache.version);
@@ -45,26 +47,79 @@ class PackageLoadingSupportFileInstallTest {
     Path missing = tempDir.resolve("nope.tgz");
     IOException e = assertThrows(IOException.class,
         () -> PackageLoadingSupport.installPackageFromFile(new RecordingCacheManager(), missing,
-            new HashSet<>()));
+            new HashSet<>(), false));
     assertTrue(e.getMessage().contains("does not exist"));
   }
 
-  private static Path writePackageTarball(Path target, String name, String version)
-      throws IOException {
-    String packageJson = "{\"name\":\"" + name + "\",\"version\":\"" + version
-        + "\",\"fhirVersions\":[\"4.0.1\"],\"type\":\"fhir.ig\"}";
-    byte[] payload = packageJson.getBytes(StandardCharsets.UTF_8);
+  @Test
+  void installPackageFromFile_keepsCachedPackageWhenNotForced(@TempDir Path tempDir)
+      throws Exception {
+    Path cacheDir = Files.createDirectory(tempDir.resolve("cache"));
+    FilesystemPackageCacheManager cache = cacheManagerFor(cacheDir);
+    Path first = TestPackageTarballs.write(tempDir.resolve("first.tgz"), PKG_ID, PKG_VERSION, "build-1");
+    Path rebuilt = TestPackageTarballs.write(tempDir.resolve("rebuilt.tgz"), PKG_ID, PKG_VERSION,
+        "build-2");
 
-    try (OutputStream fileOut = Files.newOutputStream(target);
-        GZIPOutputStream gzip = new GZIPOutputStream(fileOut);
-        TarArchiveOutputStream tar = new TarArchiveOutputStream(gzip)) {
-      TarArchiveEntry entry = new TarArchiveEntry("package/package.json");
-      entry.setSize(payload.length);
-      tar.putArchiveEntry(entry);
-      tar.write(payload);
-      tar.closeArchiveEntry();
-    }
-    return target;
+    PackageLoadingSupport.installPackageFromFile(cache, first, new HashSet<>(), false);
+    PackageLoadingSupport.installPackageFromFile(cache, rebuilt, new HashSet<>(), false);
+
+    assertEquals("build-1", cachedMarker(cacheDir));
+  }
+
+  @Test
+  void installPackageFromFile_replacesCachedPackageWhenForced(@TempDir Path tempDir)
+      throws Exception {
+    Path cacheDir = Files.createDirectory(tempDir.resolve("cache"));
+    FilesystemPackageCacheManager cache = cacheManagerFor(cacheDir);
+    Path first = TestPackageTarballs.write(tempDir.resolve("first.tgz"), PKG_ID, PKG_VERSION, "build-1");
+    Path rebuilt = TestPackageTarballs.write(tempDir.resolve("rebuilt.tgz"), PKG_ID, PKG_VERSION,
+        "build-2");
+
+    PackageLoadingSupport.installPackageFromFile(cache, first, new HashSet<>(), false);
+    NpmPackage reinstalled =
+        PackageLoadingSupport.installPackageFromFile(cache, rebuilt, new HashSet<>(), true);
+
+    assertEquals("build-2", cachedMarker(cacheDir));
+    assertEquals(PKG_ID, reinstalled.name());
+    assertEquals(PKG_VERSION, reinstalled.version());
+  }
+
+  @Test
+  void installPackageFromFile_forceInstallLeavesOtherCachedVersionsAlone(@TempDir Path tempDir)
+      throws Exception {
+    Path cacheDir = Files.createDirectory(tempDir.resolve("cache"));
+    FilesystemPackageCacheManager cache = cacheManagerFor(cacheDir);
+    Path other = TestPackageTarballs.write(tempDir.resolve("other.tgz"), PKG_ID, "0.1.19", "build-old");
+    Path rebuilt = TestPackageTarballs.write(tempDir.resolve("rebuilt.tgz"), PKG_ID, PKG_VERSION,
+        "build-2");
+
+    PackageLoadingSupport.installPackageFromFile(cache, other, new HashSet<>(), false);
+    PackageLoadingSupport.installPackageFromFile(cache, rebuilt, new HashSet<>(), true);
+
+    assertTrue(Files.isDirectory(cacheDir.resolve(PKG_ID + "#0.1.19")));
+    assertEquals("build-old", TestPackageTarballs.markerIn(cacheDir.resolve(PKG_ID + "#0.1.19")));
+    assertEquals("build-2", cachedMarker(cacheDir));
+  }
+
+  @Test
+  void installPackageFromFile_installsWhenNothingIsCachedYet(@TempDir Path tempDir)
+      throws Exception {
+    Path cacheDir = Files.createDirectory(tempDir.resolve("cache"));
+    FilesystemPackageCacheManager cache = cacheManagerFor(cacheDir);
+    Path tgz = TestPackageTarballs.write(tempDir.resolve("first.tgz"), PKG_ID, PKG_VERSION, "build-1");
+
+    assertFalse(cache.packageInstalled(PKG_ID, PKG_VERSION));
+    PackageLoadingSupport.installPackageFromFile(cache, tgz, new HashSet<>(), true);
+
+    assertEquals("build-1", cachedMarker(cacheDir));
+  }
+
+  private static FilesystemPackageCacheManager cacheManagerFor(Path cacheDir) throws IOException {
+    return new FilesystemPackageCacheManager.Builder().withCacheFolder(cacheDir.toString()).build();
+  }
+
+  private static String cachedMarker(Path cacheDir) throws IOException {
+    return TestPackageTarballs.markerIn(cacheDir.resolve(PKG_ID + "#" + PKG_VERSION));
   }
 
   private static final class RecordingCacheManager implements IPackageCacheManager {

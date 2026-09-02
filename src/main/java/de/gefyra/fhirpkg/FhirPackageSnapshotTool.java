@@ -59,6 +59,10 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
   List<Path> packageFiles = new ArrayList<>();
 
   @Option(names = {
+      "--force-install"}, description = "Reinstall the requested packages (-p, --package-file) even when they are already cached; dependencies are not affected")
+  boolean forceInstall = false;
+
+  @Option(names = {
       "--sushi-deps-str"}, description = "YAML block (as string) from sushi-config.yaml with 'dependencies:'")
   String sushiDepsStr;
 
@@ -378,9 +382,8 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     // Local tarballs win over registry coordinates with the same package id.
     for (Path file : localPackageFiles) {
       try {
-        NpmPackage p = PackageLoadingSupport.installPackageFromFile(cache, file, knownCacheDirs);
-        System.out.printf(Locale.ROOT, "Installed local package file %s as %s#%s%n", file, p.name(),
-            p.version());
+        NpmPackage p = PackageLoadingSupport.installPackageFromFile(cache, file, knownCacheDirs,
+            forceInstall);
         if (seenByName.add(p.name())) {
           allPkgs.add(p);
         }
@@ -396,7 +399,8 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
         continue;
       }
       try {
-        NpmPackage p = PackageLoadingSupport.loadPackage(cache, coord, knownCacheDirs);
+        NpmPackage p =
+            PackageLoadingSupport.loadPackage(cache, coord, knownCacheDirs, forceInstall);
         if (seenByName.add(p.name())) {
           allPkgs.add(p);
         }

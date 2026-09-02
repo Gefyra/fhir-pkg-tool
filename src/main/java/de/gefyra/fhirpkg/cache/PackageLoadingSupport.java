@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
+import org.hl7.fhir.utilities.npm.FilesystemPackageCacheManager;
 import org.hl7.fhir.utilities.npm.IPackageCacheManager;
 import org.hl7.fhir.utilities.npm.NpmPackage;
 
@@ -47,9 +48,13 @@ public final class PackageLoadingSupport {
    * Installs a FHIR NPM package from a local {@code .tgz} file into the package cache, the same way
    * {@code fhir install <file> --file} does. Package id and version are taken from the package's own
    * {@code package.json}.
+   *
+   * <p>The underlying cache manager silently keeps an already cached {@code <id>#<version>} instead
+   * of replacing it, so re-installing a rebuilt tarball under an unchanged version would be a no-op.
+   * This method reports that case and, with {@code forceInstall}, removes the cached copy first.
    */
   public static NpmPackage installPackageFromFile(IPackageCacheManager cache, Path packageFile,
-      Set<Path> knownCacheDirs) throws IOException {
+      Set<Path> knownCacheDirs, boolean forceInstall) throws IOException {
     Path file = packageFile.toAbsolutePath().normalize();
     if (!Files.isRegularFile(file)) {
       throw new IOException("Package file does not exist: " + file);
@@ -66,16 +71,91 @@ public final class PackageLoadingSupport {
       throw new IOException("package.json in " + file + " has no usable name/version");
     }
 
+    boolean cached = isCachedUnderSameVersion(cache, name, version);
+    if (cached) {
+      if (forceInstall) {
+        removeCachedPackage(cache, name, version);
+      } else {
+        NpmPackage kept = keepCachedPackage(cache, name, version, file, knownCacheDirs);
+        if (kept != null) {
+          return kept;
+        }
+      }
+    }
+
     NpmPackage installed;
     try (InputStream in = Files.newInputStream(file)) {
       installed = cache.addPackageToCache(name, version, in, file.toString());
     }
     notePackageCacheLocation(installed, knownCacheDirs);
+    System.out.printf(Locale.ROOT, "%s local package file %s as %s#%s%n",
+        cached ? "Reinstalled" : "Installed", file, installed.name(), installed.version());
     return installed;
+  }
+
+  /**
+   * Reports that {@code file} was ignored in favour of the cached package and returns the cached
+   * copy, or {@code null} when it cannot be loaded and the regular install should be attempted.
+   */
+  private static NpmPackage keepCachedPackage(IPackageCacheManager cache, String name,
+      String version, Path file, Set<Path> knownCacheDirs) {
+    NpmPackage cachedPackage;
+    try {
+      cachedPackage = cache.loadPackageFromCacheOnly(name, version);
+    } catch (Exception e) {
+      // The cached copy is unusable, so fall back to installing the tarball over it.
+      return null;
+    }
+    if (cachedPackage == null) {
+      return null;
+    }
+    System.err.printf(Locale.ROOT,
+        "Package %s#%s is already in the cache; keeping the cached copy and ignoring %s. "
+            + "Use --force-install to replace it.%n",
+        name, version, file);
+    notePackageCacheLocation(cachedPackage, knownCacheDirs);
+    return cachedPackage;
+  }
+
+  /**
+   * Whether the cache already holds this exact {@code <id>#<version>}. Versions the cache manager
+   * overwrites on its own ({@code current}, {@code dev}) never count as cached.
+   */
+  private static boolean isCachedUnderSameVersion(IPackageCacheManager cache, String name,
+      String version) {
+    if (isAlwaysOverwritten(version)) {
+      return false;
+    }
+    return cache instanceof FilesystemPackageCacheManager filesystemCache
+        && filesystemCache.packageInstalled(name, version);
+  }
+
+  private static void removeCachedPackage(IPackageCacheManager cache, String name, String version)
+      throws IOException {
+    if (cache instanceof FilesystemPackageCacheManager filesystemCache) {
+      filesystemCache.removePackage(name, version);
+    }
+  }
+
+  private static boolean isAlwaysOverwritten(String version) {
+    return "current".equals(version) || "dev".equals(version);
   }
 
   public static NpmPackage loadPackage(IPackageCacheManager cache, String coordinate,
       Set<Path> knownCacheDirs) throws IOException {
+    return loadPackage(cache, coordinate, knownCacheDirs, false);
+  }
+
+  /**
+   * Loads a package from the cache, or from the registry when it is not cached yet.
+   *
+   * <p>With {@code forceInstall} an already cached {@code <id>#<version>} is dropped first, so the
+   * registry copy is fetched again. That matters for packages republished under an unchanged
+   * version (e.g. a ballot RC); note that the cached copy is gone once removed, so a failing
+   * download leaves the package uninstalled until the next successful run.
+   */
+  public static NpmPackage loadPackage(IPackageCacheManager cache, String coordinate,
+      Set<Path> knownCacheDirs, boolean forceInstall) throws IOException {
     String name = coordinate;
     String version = null;
     if (coordinate.contains("@")) {
@@ -83,11 +163,37 @@ public final class PackageLoadingSupport {
       name = parts[0];
       version = parts[1];
     }
+    if (forceInstall) {
+      dropCachedPackageBeforeReinstall(cache, name, version, coordinate);
+    }
     NpmPackage pkg = (version == null || version.isBlank())
         ? cache.loadPackage(name)
         : cache.loadPackage(name, version);
     notePackageCacheLocation(pkg, knownCacheDirs);
     return pkg;
+  }
+
+  /**
+   * Removes the cached copy so the following load has to fetch the package again. Needs an explicit
+   * version: without one the version is only resolved during the load, so there is no single cache
+   * entry to drop.
+   *
+   * <p>Package-private so it can be tested without a load that would reach for the registry.
+   */
+  static void dropCachedPackageBeforeReinstall(IPackageCacheManager cache, String name,
+      String version, String coordinate) throws IOException {
+    if (version == null || version.isBlank()) {
+      System.err.printf(Locale.ROOT,
+          "--force-install needs an explicit version; installing %s from the cache if present.%n",
+          coordinate);
+      return;
+    }
+    if (!isCachedUnderSameVersion(cache, name, version)) {
+      return;
+    }
+    removeCachedPackage(cache, name, version);
+    System.out.printf(Locale.ROOT, "Dropped cached %s#%s to reinstall it from the registry.%n",
+        name, version);
   }
 
   public static List<NpmPackage> loadAllDependencies(IPackageCacheManager cache, NpmPackage root,
