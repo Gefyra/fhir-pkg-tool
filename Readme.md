@@ -153,38 +153,58 @@ in the same job share the runner's filesystem, so SUSHI, the IG Publisher or the
 in a later step find the packages — now carrying snapshots — exactly where they look for them. Only
 across *jobs* is the cache gone; that is what the `cache` input is for.
 
-A fuller example:
+A fuller example, warming the cache for a SUSHI build. This is what the action is for: the packages
+land in `~/.fhir/packages` before SUSHI looks for them there, carrying snapshots, so the build does
+not download the dependency tree itself.
 
 ```yaml
-name: FHIR Snapshots
+name: IG build
 
 on:
   push:
     branches: [ main ]
   pull_request:
 
+env:
+  SUSHI_VERSION: "3.20.1"
+
 jobs:
-  snapshots:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
       - name: Install FHIR packages and generate snapshots
-        id: fhir
         uses: Gefyra/fhir-pkg-tool@v0.5.0
         with:
-          packages: |
-            hl7.fhir.r4.core@4.0.1
-            hl7.fhir.us.core@6.1.0
-          force-snapshot: 'true'
+          sushi-deps-file: sushi-config.yaml
 
-      - name: Upload snapshots
+      - name: Run SUSHI
+        run: |
+          npm install --global "fsh-sushi@${SUSHI_VERSION}"
+          sushi .
+
+      - name: Upload the generated resources
         uses: actions/upload-artifact@v7
         with:
-          name: fhir-snapshots
-          path: ${{ steps.fhir.outputs.out-dir }}
+          name: fsh-generated
+          path: fsh-generated/resources
           if-no-files-found: error
 ```
+
+The same pattern works for the HL7 IG Publisher, which reads the same cache. Two things are worth
+knowing about it:
+
+- **A dependency without a pinned version is still resolved over the network.** The action installs
+  what `sushi-config.yaml` names; for an entry that says `latest`, or none at all, SUSHI still asks
+  the registry which version that is.
+- **Do not upload the cache directory as an artifact.** It holds the complete content of every
+  package, dependencies included, which is far larger than the generated output you actually want.
+  `outputs.out-dir` is there to point a following step at the cache, not to archive it.
 
 ### Action inputs
 
