@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format follows
 The section for a version is what the release workflow publishes as the release notes, so every
 release needs an entry here before it is tagged.
 
-## [0.5.0] - unreleased
+## [0.5.0] - 2026-09-17
 
 ### Added
 
