@@ -1,0 +1,21 @@
+# Shapes the notes GitHub generates below the curated CHANGELOG.md section.
+# Without the exclusions, a release is dominated by Dependabot bumps.
+changelog:
+  exclude:
+    labels:
+      - dependencies
+    authors:
+      - dependabot
+      - github-actions
+  categories:
+    - title: Features
+      labels:
+        - enhancement
+        - feature
+    - title: Fixes
+      labels:
+        - bug
+        - fix
+    - title: Other changes
+      labels:
+        - "*"
