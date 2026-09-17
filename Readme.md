@@ -10,6 +10,30 @@
 
 A small CLI tool that downloads FHIR NPM packages from the registry, resolves recursive dependencies, and generates snapshots for `StructureDefinition`s.
 
+## Contents
+
+- [Features](#features)
+- [Install](#install)
+- [Examples](#examples)
+  - [Multiple packages](#multiple-packages)
+  - [Dependencies from a Sushi file](#dependencies-from-a-sushi-file)
+  - [Dependencies from inline YAML](#dependencies-from-inline-yaml)
+  - [Dependencies from package.json](#dependencies-from-packagejson)
+  - [Install a package from a local tarball](#install-a-package-from-a-local-tarball)
+  - [Always rebuild snapshots](#always-rebuild-snapshots)
+  - [Only root packages](#only-root-packages)
+  - [Local profiles from a folder](#local-profiles-from-a-folder)
+  - [Reinstall a republished package](#reinstall-a-republished-package)
+- [Use in a GitHub Actions pipeline](#use-in-a-github-actions-pipeline)
+  - [Action inputs](#action-inputs)
+  - [Notes for CI](#notes-for-ci)
+  - [Without the action](#without-the-action)
+- [CLI Options](#cli-options)
+- [Exit Codes](#exit-codes)
+- [Lock Files](#lock-files)
+- [Version Handling](#version-handling)
+- [Output Layout](#output-layout)
+
 ## Features
 - Multiple packages via `-p` (also comma-separated)
 - Local package tarballs via `--package-file` (equivalent to `fhir install <file.tgz> --file`)
@@ -58,19 +82,19 @@ workflow sets to the git tag. A local build reports `0.0.0-SNAPSHOT` unless you 
 All examples below use `java -jar target/fhir-pkg-tool.jar`; with a native binary simply
 replace that with `./fhir-pkg-tool`.
 
-## Run – Examples
+## Examples
 
-**Multiple packages:**
+### Multiple packages
 ```bash
 java -jar target/fhir-pkg-tool.jar   -p hl7.fhir.r4.core@4.0.1   -p hl7.fhir.us.core@6.1.0,hl7.fhir.au.core@5.0.0   -o ./out/mix
 ```
 
-**Dependencies from Sushi file:**
+### Dependencies from a Sushi file
 ```bash
 java -jar target/fhir-pkg-tool.jar   --sushi-deps-file ./sushi-config.yaml   -o ./out/from-sushi
 ```
 
-**Dependencies from inline YAML:**
+### Dependencies from inline YAML
 ```bash
 java -jar target/fhir-pkg-tool.jar   --sushi-deps-str "$(cat <<'YAML' 
 dependencies:
@@ -83,12 +107,15 @@ YAML
 )"   -o ./out/from-inline
 ```
 
-**Dependencies from package.json:**
+### Dependencies from package.json
 ```bash
 java -jar target/fhir-pkg-tool.jar   --package-json-file ./package.json   -o ./out/from-package-json
 ```
 
-**Install a package from a local tarball (like `fhir install <file> --file`):**
+### Install a package from a local tarball
+
+Equivalent to `fhir install <file.tgz> --file`.
+
 ```bash
 java -jar target/fhir-pkg-tool.jar   --package-file ./packages/molit-service.fhir.vitu-0.1.20.tgz
 ```
@@ -98,17 +125,17 @@ Notes:
 - If `<packageId>#<version>` is already in the cache, the cached copy is kept and the tarball is ignored (the tool says so). Use `--force-install` to drop the cached copy and install the tarball instead.
 - Dependencies of the local package are resolved from the registry unless `--skip-deps` is given.
 
-**Always rebuild snapshots:**
+### Always rebuild snapshots
 ```bash
 java -jar target/fhir-pkg-tool.jar   --sushi-deps-file ./sushi-config.yaml   --force-snapshot
 ```
 
-**Only root packages (skip dependencies):**
+### Only root packages
 ```bash
 java -jar target/fhir-pkg-tool.jar   -p hl7.fhir.r5.core@5.0.0 -p hl7.fhir.uv.tools@current   --skip-deps
 ```
 
-**Local profiles from a folder (local-only output):**
+### Local profiles from a folder
 ```bash
 java -jar target/fhir-pkg-tool.jar \
   -p hl7.fhir.r4.core@4.0.1 \
@@ -122,7 +149,7 @@ Notes:
 - Snapshot generation respects `--force-snapshot`, `--overwrite`, and `--pretty`.
 - With `--sushi-deps-file`, the `fhirVersion` declared in that file determines the context; without a Sushi file, the first loaded package decides, and the tool falls back to R5.
 
-**Reinstall a package that was republished under the same version:**
+### Reinstall a republished package
 ```bash
 java -jar target/fhir-pkg-tool.jar   -p de.medizininformatikinitiative.kerndatensatz.labor@2027.0.0-ballot.rc1   --force-install
 ```
@@ -332,7 +359,8 @@ Lock files that fail either test are kept, listed by path, and the run aborts wi
 where the cache lives on NFS or SMB: advisory locks are unreliable there, and the first test can
 report a lock as free although a process on another host holds it.
 
-## Notes
+## Version Handling
+
 - Avoid mixing FHIR versions in one run; use one version per run (context comes from the first package).
 - The version `current` is supported if the registry provides it.
 - Missing versions in Sushi are interpreted as "latest".
