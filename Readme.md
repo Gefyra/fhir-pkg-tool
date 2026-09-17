@@ -10,7 +10,34 @@
 
 A small CLI tool that downloads FHIR NPM packages from the registry, resolves recursive dependencies, and generates snapshots for `StructureDefinition`s.
 
+
+## Contents
+
+- [Features](#features)
+- [Install](#install)
+- [Examples](#examples)
+  - [Multiple packages](#multiple-packages)
+  - [Dependencies from a Sushi file](#dependencies-from-a-sushi-file)
+  - [Dependencies from inline YAML](#dependencies-from-inline-yaml)
+  - [Dependencies from package.json](#dependencies-from-packagejson)
+  - [Install a package from a local tarball](#install-a-package-from-a-local-tarball)
+  - [Always rebuild snapshots](#always-rebuild-snapshots)
+  - [Only root packages](#only-root-packages)
+  - [Local profiles from a folder](#local-profiles-from-a-folder)
+  - [Reinstall a republished package](#reinstall-a-republished-package)
+- [Output Layout](#output-layout)
+- [Use in a GitHub Actions pipeline](#use-in-a-github-actions-pipeline)
+  - [Action inputs](#action-inputs)
+  - [Notes for CI](#notes-for-ci)
+  - [Without the action](#without-the-action)
+- [Reference](#reference)
+  - [CLI Options](#cli-options)
+  - [Exit Codes](#exit-codes)
+  - [Version Handling](#version-handling)
+  - [Lock Files](#lock-files)
+
 ## Features
+
 - Multiple packages via `-p` (also comma-separated)
 - Local package tarballs via `--package-file` (equivalent to `fhir install <file.tgz> --file`)
 - Reinstall of already cached packages via `--force-install`, from the registry or from a local tarball
@@ -58,19 +85,19 @@ workflow sets to the git tag. A local build reports `0.0.0-SNAPSHOT` unless you 
 All examples below use `java -jar target/fhir-pkg-tool.jar`; with a native binary simply
 replace that with `./fhir-pkg-tool`.
 
-## Run – Examples
+## Examples
 
-**Multiple packages:**
+### Multiple packages
 ```bash
 java -jar target/fhir-pkg-tool.jar   -p hl7.fhir.r4.core@4.0.1   -p hl7.fhir.us.core@6.1.0,hl7.fhir.au.core@5.0.0   -o ./out/mix
 ```
 
-**Dependencies from Sushi file:**
+### Dependencies from a Sushi file
 ```bash
 java -jar target/fhir-pkg-tool.jar   --sushi-deps-file ./sushi-config.yaml   -o ./out/from-sushi
 ```
 
-**Dependencies from inline YAML:**
+### Dependencies from inline YAML
 ```bash
 java -jar target/fhir-pkg-tool.jar   --sushi-deps-str "$(cat <<'YAML' 
 dependencies:
@@ -83,12 +110,15 @@ YAML
 )"   -o ./out/from-inline
 ```
 
-**Dependencies from package.json:**
+### Dependencies from package.json
 ```bash
 java -jar target/fhir-pkg-tool.jar   --package-json-file ./package.json   -o ./out/from-package-json
 ```
 
-**Install a package from a local tarball (like `fhir install <file> --file`):**
+### Install a package from a local tarball
+
+Equivalent to `fhir install <file.tgz> --file`.
+
 ```bash
 java -jar target/fhir-pkg-tool.jar   --package-file ./packages/molit-service.fhir.vitu-0.1.20.tgz
 ```
@@ -98,17 +128,17 @@ Notes:
 - If `<packageId>#<version>` is already in the cache, the cached copy is kept and the tarball is ignored (the tool says so). Use `--force-install` to drop the cached copy and install the tarball instead.
 - Dependencies of the local package are resolved from the registry unless `--skip-deps` is given.
 
-**Always rebuild snapshots:**
+### Always rebuild snapshots
 ```bash
 java -jar target/fhir-pkg-tool.jar   --sushi-deps-file ./sushi-config.yaml   --force-snapshot
 ```
 
-**Only root packages (skip dependencies):**
+### Only root packages
 ```bash
 java -jar target/fhir-pkg-tool.jar   -p hl7.fhir.r5.core@5.0.0 -p hl7.fhir.uv.tools@current   --skip-deps
 ```
 
-**Local profiles from a folder (local-only output):**
+### Local profiles from a folder
 ```bash
 java -jar target/fhir-pkg-tool.jar \
   -p hl7.fhir.r4.core@4.0.1 \
@@ -122,7 +152,7 @@ Notes:
 - Snapshot generation respects `--force-snapshot`, `--overwrite`, and `--pretty`.
 - With `--sushi-deps-file`, the `fhirVersion` declared in that file determines the context; without a Sushi file, the first loaded package decides, and the tool falls back to R5.
 
-**Reinstall a package that was republished under the same version:**
+### Reinstall a republished package
 ```bash
 java -jar target/fhir-pkg-tool.jar   -p de.medizininformatikinitiative.kerndatensatz.labor@2027.0.0-ballot.rc1   --force-install
 ```
@@ -135,6 +165,13 @@ Notes:
 - `current` and `dev` are always refreshed anyway, with or without the flag.
 - For `-p`, the cached copy is deleted before the package is fetched again — if that download fails, the package stays uninstalled until the next successful run. `--package-file` has no such risk, the tarball is local.
 - Not to be confused with `--force-snapshot`, which regenerates snapshots for packages that are already installed.
+
+## Output Layout
+
+- For each loaded package, a directory `--out/<packageId>#<version>/` is created and the contents of the package are copied into it (`package/`, `example/`, `other/`, etc.).
+- Only `StructureDefinition` JSON files are parsed and, if needed, replaced by a version containing a `snapshot` element in `package/`.
+- Without `--overwrite`, existing files are never overwritten — with one exception: StructureDefinitions whose snapshot was regenerated (because none existed or because `--force-snapshot` is set) are always updated. With `--overwrite`, unchanged files are overwritten as well.
+- With `--profiles-dir`, only local files are written to `--out/local` (packages are neither copied nor snapshotted). The original directory structure is mirrored. A base package (e.g. `hl7.fhir.r4.core`) should be given via `-p` so that base definitions and bindings can be resolved.
 
 ## Use in a GitHub Actions pipeline
 
@@ -275,7 +312,11 @@ centrally:
 The jar variant needs a JDK 21 on the runner (`actions/setup-java@v5`) and is otherwise identical:
 `java -jar fhir-pkg-tool.jar --sushi-deps-file ./sushi-config.yaml`.
 
-## CLI Options
+## Reference
+
+The full option list, what the exit codes mean, and the two mechanisms that are easy to trip over: how versions are resolved and how lock files are handled.
+
+### CLI Options
 
 - `-p, --package`: One or more package coordinates (`name@version`). Comma-separated allowed, can be repeated.
 - `--package-file, --file`: Path to a local package tarball (`*.tgz`) that is installed into the cache. Repeatable. Package id and version are read from the tarball's `package.json`.
@@ -296,7 +337,7 @@ The jar variant needs a JDK 21 on the runner (`actions/setup-java@v5`) and is ot
 - `--debug`: Print stack traces for execution errors and keep the library log output (which is otherwise reduced to `error`).
 - `-h, --help`, `-V, --version`: Standard picocli options. `--version` reports the release the binary was built from.
 
-## Exit Codes
+### Exit Codes
 
 | Code | Meaning |
 | ---- | ------- |
@@ -308,7 +349,13 @@ The jar variant needs a JDK 21 on the runner (`actions/setup-java@v5`) and is ot
 | 5 | `*.lock` files in the cache (see [Lock files](#lock-files)) or lock repair failed |
 | 6 | At least one snapshot could not be generated |
 
-## Lock Files
+### Version Handling
+
+- Avoid mixing FHIR versions in one run; use one version per run (context comes from the first package).
+- The version `current` is supported if the registry provides it.
+- Missing versions in Sushi are interpreted as "latest".
+
+### Lock Files
 
 The package cache is shared state: `FilesystemPackageCacheManager` creates a `<package>.lock` file
 next to the package directories and holds an exclusive OS-level lock on it for as long as it works
@@ -331,15 +378,3 @@ Lock files that fail either test are kept, listed by path, and the run aborts wi
 `--no-repair-lock-files` turns the repair off entirely, so any lock file aborts the run. Use it
 where the cache lives on NFS or SMB: advisory locks are unreliable there, and the first test can
 report a lock as free although a process on another host holds it.
-
-## Notes
-- Avoid mixing FHIR versions in one run; use one version per run (context comes from the first package).
-- The version `current` is supported if the registry provides it.
-- Missing versions in Sushi are interpreted as "latest".
-
-## Output Layout
-
-- For each loaded package, a directory `--out/<packageId>#<version>/` is created and the contents of the package are copied into it (`package/`, `example/`, `other/`, etc.).
-- Only `StructureDefinition` JSON files are parsed and, if needed, replaced by a version containing a `snapshot` element in `package/`.
-- Without `--overwrite`, existing files are never overwritten — with one exception: StructureDefinitions whose snapshot was regenerated (because none existed or because `--force-snapshot` is set) are always updated. With `--overwrite`, unchanged files are overwritten as well.
-- With `--profiles-dir`, only local files are written to `--out/local` (packages are neither copied nor snapshotted). The original directory structure is mirrored. A base package (e.g. `hl7.fhir.r4.core`) should be given via `-p` so that base definitions and bindings can be resolved.
