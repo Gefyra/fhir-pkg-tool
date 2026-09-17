@@ -14,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -41,7 +42,7 @@ import picocli.CommandLine.Option;
 @Command(
     name = "fhir-pkg-tool",
     mixinStandardHelpOptions = true,
-    version = "1.0-SNAPSHOT",
+    versionProvider = BuildVersion.class,
     description = "Downloads FHIR NPM packages, resolves dependencies, generates StructureDefinition snapshots, and writes them as JSON files."
 )
 public class FhirPackageSnapshotTool implements Callable<Integer> {
@@ -114,9 +115,16 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
       "--profiles-dir"}, description = "Directory with local StructureDefinition JSONs (processed recursively)")
   Path profilesDir;
 
+  // Two separate options rather than negatable=true: picocli's negated form sets the DEFAULT and
+  // the plain form its opposite, so with a default of true '--repair-lock-files' would switch the
+  // repair OFF - the exact opposite of what anyone passing it expects.
   @Option(names = {
-      "--repair-lock-files"}, description = "Delete '*.lock' files in effective cache directory before package loading")
-  boolean repairLockFiles = false;
+      "--no-repair-lock-files"}, description = "Keep '*.lock' files in the effective cache directory instead of removing orphaned ones (repair is on by default)")
+  boolean noRepairLockFiles = false;
+
+  @Option(names = {
+      "--repair-lock-files"}, description = "No-op, accepted for backwards compatibility: orphaned lock files are removed by default")
+  boolean repairLockFilesLegacy = false;
 
   @Option(names = {
       "--no-auto-core"}, description = "Do NOT automatically load the FHIR core package as snapshot context when it is missing")
@@ -302,14 +310,36 @@ public class FhirPackageSnapshotTool implements Callable<Integer> {
     if (lockFiles.isEmpty()) {
       return 0;
     }
-    System.err.printf(Locale.ROOT, "Error: Found %d .lock file(s) in cache.%n", lockFiles.size());
-    if (!repairLockFiles) {
-      System.err.println("Hint: rerun with --repair-lock-files to remove stale lock files.");
+    if (noRepairLockFiles) {
+      System.err.printf(Locale.ROOT, "Error: Found %d .lock file(s) in cache.%n",
+          lockFiles.size());
+      System.err.println(
+          "Hint: lock file repair is disabled by --no-repair-lock-files; drop that flag to remove orphaned locks automatically.");
       return 5;
     }
     try {
-      int deleted = CacheSafety.deleteLockFiles(lockFiles);
-      System.out.printf(Locale.ROOT, "Repair: deleted %d .lock file(s).%n", deleted);
+      CacheSafety.LockFileTriage triage = CacheSafety.triageLockFiles(lockFiles,
+          CacheSafety.DEFAULT_MIN_LOCK_AGE, Instant.now());
+
+      if (!triage.deletable().isEmpty()) {
+        int deleted = CacheSafety.deleteLockFiles(triage.deletable());
+        System.out.printf(Locale.ROOT,
+            "Repair: deleted %d orphaned .lock file(s) left behind by an earlier run.%n", deleted);
+      }
+
+      // Repair never touches a lock that is still held or too young to judge: another process may
+      // be installing into the same cache right now, and removing its lock would let two writers
+      // work on one package directory.
+      if (!triage.retained().isEmpty()) {
+        System.err.printf(Locale.ROOT,
+            "Error: %d .lock file(s) are still held by another process or younger than %d minutes; they were kept. Aborting.%n",
+            triage.retained().size(), CacheSafety.DEFAULT_MIN_LOCK_AGE.toMinutes());
+        for (Path retained : triage.retained()) {
+          System.err.printf(Locale.ROOT, "  kept: %s%n", retained);
+        }
+        return 5;
+      }
+
       List<Path> remainingLocks = CacheSafety.findLockFiles(effectiveCacheDir);
       if (!remainingLocks.isEmpty()) {
         System.err.printf(Locale.ROOT, "Error: %d .lock file(s) remain after repair. Aborting.%n",

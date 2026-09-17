@@ -1,0 +1,316 @@
+name: 'FHIR Package Snapshot Tool'
+description: 'Install FHIR packages and generate StructureDefinition snapshots into the FHIR package cache.'
+author: 'Gefyra'
+
+branding:
+  icon: 'package'
+  color: 'red'
+
+inputs:
+  packages:
+    description: 'Package coordinates (name@version), comma- or newline-separated.'
+    required: false
+    default: ''
+  package-files:
+    description: 'Local package tarballs (*.tgz), newline-separated.'
+    required: false
+    default: ''
+  sushi-deps-file:
+    description: 'Path to a sushi-config.yaml whose dependencies are installed.'
+    required: false
+    default: ''
+  sushi-deps-str:
+    description: 'Inline YAML block containing a dependencies: map.'
+    required: false
+    default: ''
+  package-json-file:
+    description: 'Path to a package.json whose dependencies are installed (devDependencies are ignored).'
+    required: false
+    default: ''
+  profiles-dir:
+    description: 'Directory with local StructureDefinition JSONs. When set, package contents are not written.'
+    required: false
+    default: ''
+  out:
+    description: >-
+      Output directory, which doubles as the package cache. Empty (the default) uses the standard
+      FHIR cache, so later steps in the same job - SUSHI, the IG Publisher, the validator - find the
+      packages where they expect them.
+    required: false
+    default: ''
+  version:
+    description: >-
+      Release tag of fhir-pkg-tool to run. Empty uses the tag this action is referenced by
+      (e.g. Gefyra/fhir-pkg-tool@v0.4.0), and falls back to the pinned default below when the
+      action is referenced by a branch or a local path.
+    required: false
+    default: ''
+  binary:
+    description: >-
+      Path to an already available fhir-pkg-tool binary. When set, nothing is downloaded and
+      `version` is ignored - for runners without access to github.com, or to test a build that
+      has not been released yet.
+    required: false
+    default: ''
+  cache:
+    description: 'Cache the output/cache directory between runs via actions/cache.'
+    required: false
+    default: 'true'
+  cache-key-files:
+    description: 'Newline-separated glob patterns hashed into the cache key.'
+    required: false
+    default: |
+      sushi-config.yaml
+      package.json
+  repair-lock-files:
+    description: >-
+      Remove orphaned *.lock files in the cache before loading, i.e. locks left behind by a run
+      that was cancelled or killed. A lock another process is holding, or one younger than five
+      minutes, is kept and the run still aborts with exit code 5. On by default, matching the CLI;
+      set to 'false' on a shared cache mounted over NFS or SMB, where the lock check is unreliable.
+    required: false
+    default: 'true'
+  skip-deps:
+    description: 'Do not auto-load transitive dependencies.'
+    required: false
+    default: 'false'
+  no-auto-core:
+    description: 'Do not auto-load the matching FHIR core package as snapshot context.'
+    required: false
+    default: 'false'
+  force-snapshot:
+    description: 'Always regenerate snapshots, even when one is present.'
+    required: false
+    default: 'false'
+  force-install:
+    description: 'Reinstall the requested packages even when they are already cached.'
+    required: false
+    default: 'false'
+  ignore-snapshot-errors:
+    description: 'Succeed even when snapshots failed (otherwise the step fails with exit code 6).'
+    required: false
+    default: 'false'
+  overwrite:
+    description: 'Overwrite existing files in the output.'
+    required: false
+    default: 'false'
+  registry:
+    description: 'Package registry URL. Empty uses https://packages.fhir.org.'
+    required: false
+    default: ''
+  debug:
+    description: 'Print stack traces and keep the library log output.'
+    required: false
+    default: 'false'
+  extra-args:
+    description: 'Additional arguments passed through verbatim (quotes are honoured).'
+    required: false
+    default: ''
+
+outputs:
+  out-dir:
+    description: 'The directory the packages and snapshots were written to (also the package cache).'
+    value: ${{ steps.resolve.outputs.out-dir }}
+  version:
+    description: 'The fhir-pkg-tool release that was run.'
+    value: ${{ steps.resolve.outputs.version }}
+  cache-hit:
+    description: 'Whether the package cache was restored from an exact key match.'
+    value: ${{ steps.cache.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve release and cache directory
+      id: resolve
+      shell: bash
+      env:
+        # Fallback for references that are not a release tag (@main, a local path).
+        # Keep in sync with the latest release; a tagged reference derives its own
+        # version from action_ref and ignores this.
+        DEFAULT_VERSION: 'v0.5.0'
+        ACTION_REF: ${{ github.action_ref }}
+        IN_VERSION: ${{ inputs.version }}
+        IN_BINARY: ${{ inputs.binary }}
+        IN_OUT: ${{ inputs.out }}
+      run: |
+        set -euo pipefail
+
+        case "${RUNNER_OS}:${RUNNER_ARCH}" in
+          Linux:X64)   asset="fhir-pkg-tool-linux-x64" ;;
+          Linux:ARM64) asset="fhir-pkg-tool-linux-arm64" ;;
+          macOS:X64)   asset="fhir-pkg-tool-macos-x64" ;;
+          macOS:ARM64) asset="fhir-pkg-tool-macos-arm64" ;;
+          Windows:X64) asset="fhir-pkg-tool-windows-x64.exe" ;;
+          *)
+            echo "::error::fhir-pkg-tool ships no release binary for ${RUNNER_OS}/${RUNNER_ARCH}. Supported: Linux x64/arm64, macOS x64/arm64, Windows x64."
+            exit 1
+            ;;
+        esac
+
+        version="${IN_VERSION}"
+        if [ -z "${version}" ]; then
+          case "${ACTION_REF:-}" in
+            v[0-9]*) version="${ACTION_REF}" ;;
+            *)       version="${DEFAULT_VERSION}" ;;
+          esac
+        fi
+
+        # Leaving --out unset lets the tool pick the standard cache itself, which
+        # avoids handing a POSIX-style path to the native Windows binary. The path
+        # resolved here is only used for the cache entry and the step output.
+        if [ -n "${IN_OUT}" ]; then
+          out="${IN_OUT}"
+        else
+          out="${HOME}/.fhir/packages"
+        fi
+        if command -v cygpath >/dev/null 2>&1; then
+          out="$(cygpath -w "${out}" 2>/dev/null || printf '%s' "${out}")"
+        fi
+
+        # Git Bash on Windows gets a native path in RUNNER_TEMP; converting it once
+        # here keeps the download and run steps free of path juggling.
+        tmp="${RUNNER_TEMP}"
+        if command -v cygpath >/dev/null 2>&1; then
+          tmp="$(cygpath -u "${tmp}" 2>/dev/null || printf '%s' "${tmp}")"
+        fi
+
+        if [ -n "${IN_BINARY}" ]; then
+          bin="${IN_BINARY}"
+          version="(local binary)"
+        else
+          bin="${tmp}/${asset}"
+        fi
+
+        {
+          echo "asset=${asset}"
+          echo "version=${version}"
+          echo "out-dir=${out}"
+          echo "bin=${bin}"
+        } >> "${GITHUB_OUTPUT}"
+
+        echo "fhir-pkg-tool ${version} (${asset}), cache directory: ${out}"
+
+    - name: Restore package cache
+      id: cache
+      if: ${{ inputs.cache == 'true' }}
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.resolve.outputs.out-dir }}
+        key: fhir-pkg-tool-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}-${{ hashFiles(inputs.cache-key-files) }}
+        restore-keys: |
+          fhir-pkg-tool-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.version }}-
+          fhir-pkg-tool-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Download fhir-pkg-tool
+      if: ${{ inputs.binary == '' }}
+      shell: bash
+      env:
+        ASSET: ${{ steps.resolve.outputs.asset }}
+        VERSION: ${{ steps.resolve.outputs.version }}
+        BIN: ${{ steps.resolve.outputs.bin }}
+      run: |
+        set -euo pipefail
+        if [ ! -s "${BIN}" ]; then
+          curl -sSLf --retry 3 --retry-delay 2 -o "${BIN}" \
+            "https://github.com/Gefyra/fhir-pkg-tool/releases/download/${VERSION}/${ASSET}"
+          chmod +x "${BIN}"
+        fi
+
+    - name: Run fhir-pkg-tool
+      shell: bash
+      env:
+        BIN: ${{ steps.resolve.outputs.bin }}
+        IN_PACKAGES: ${{ inputs.packages }}
+        IN_PACKAGE_FILES: ${{ inputs.package-files }}
+        IN_SUSHI_DEPS_FILE: ${{ inputs.sushi-deps-file }}
+        IN_SUSHI_DEPS_STR: ${{ inputs.sushi-deps-str }}
+        IN_PACKAGE_JSON_FILE: ${{ inputs.package-json-file }}
+        IN_PROFILES_DIR: ${{ inputs.profiles-dir }}
+        IN_OUT: ${{ inputs.out }}
+        IN_REGISTRY: ${{ inputs.registry }}
+        IN_REPAIR_LOCK_FILES: ${{ inputs.repair-lock-files }}
+        IN_SKIP_DEPS: ${{ inputs.skip-deps }}
+        IN_NO_AUTO_CORE: ${{ inputs.no-auto-core }}
+        IN_FORCE_SNAPSHOT: ${{ inputs.force-snapshot }}
+        IN_FORCE_INSTALL: ${{ inputs.force-install }}
+        IN_IGNORE_SNAPSHOT_ERRORS: ${{ inputs.ignore-snapshot-errors }}
+        IN_OVERWRITE: ${{ inputs.overwrite }}
+        IN_DEBUG: ${{ inputs.debug }}
+        IN_EXTRA_ARGS: ${{ inputs.extra-args }}
+      run: |
+        set -euo pipefail
+
+        # A run needs at least one source of resources; the flags below all default
+        # to something, so they must not count towards this check.
+        if [ -z "${IN_PACKAGES}${IN_PACKAGE_FILES}${IN_SUSHI_DEPS_FILE}${IN_SUSHI_DEPS_STR}${IN_PACKAGE_JSON_FILE}${IN_PROFILES_DIR}" ]; then
+          echo "::error::No input given. Set at least one of: packages, package-files, sushi-deps-file, sushi-deps-str, package-json-file, profiles-dir."
+          exit 1
+        fi
+
+        args=()
+
+        # Repeatable values arrive newline-separated; blank lines and '#' comments
+        # are dropped so a YAML block can be annotated.
+        add_repeated() {
+          local flag="$1" raw="$2" line
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            if [ -z "${line}" ]; then
+              continue
+            fi
+            case "${line}" in
+              '#'*) continue ;;
+            esac
+            args+=("${flag}" "${line}")
+          done <<< "${raw}"
+        }
+
+        add_value() {
+          if [ -n "$2" ]; then
+            args+=("$1" "$2")
+          fi
+        }
+
+        add_flag() {
+          if [ "$2" = "true" ]; then
+            args+=("$1")
+          fi
+        }
+
+        if [ -n "${IN_PACKAGES}" ]; then
+          add_repeated --package "${IN_PACKAGES}"
+        fi
+        if [ -n "${IN_PACKAGE_FILES}" ]; then
+          add_repeated --package-file "${IN_PACKAGE_FILES}"
+        fi
+
+        add_value --sushi-deps-file "${IN_SUSHI_DEPS_FILE}"
+        add_value --sushi-deps-str "${IN_SUSHI_DEPS_STR}"
+        add_value --package-json-file "${IN_PACKAGE_JSON_FILE}"
+        add_value --profiles-dir "${IN_PROFILES_DIR}"
+        add_value --out "${IN_OUT}"
+        add_value --registry "${IN_REGISTRY}"
+
+        # Negated flag: the tool repairs by default, so only the opt-out is passed on.
+        if [ "${IN_REPAIR_LOCK_FILES}" = "false" ]; then
+          args+=(--no-repair-lock-files)
+        fi
+        add_flag --skip-deps "${IN_SKIP_DEPS}"
+        add_flag --no-auto-core "${IN_NO_AUTO_CORE}"
+        add_flag --force-snapshot "${IN_FORCE_SNAPSHOT}"
+        add_flag --force-install "${IN_FORCE_INSTALL}"
+        add_flag --ignore-snapshot-errors "${IN_IGNORE_SNAPSHOT_ERRORS}"
+        add_flag --overwrite "${IN_OVERWRITE}"
+        add_flag --debug "${IN_DEBUG}"
+
+        if [ -n "${IN_EXTRA_ARGS}" ]; then
+          while IFS= read -r extra; do
+            if [ -n "${extra}" ]; then
+              args+=("${extra}")
+            fi
+          done < <(printf '%s' "${IN_EXTRA_ARGS}" | xargs -n1 printf '%s\n')
+        fi
+
+        "${BIN}" "${args[@]}"

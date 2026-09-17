@@ -65,3 +65,57 @@ jobs:
             exit 1
           fi
           "$BIN" --help
+          "$BIN" --version
+
+          # --help never constructs a FHIR worker context, which is exactly where
+          # a resource missing from the native image surfaces: v0.4.0 shipped
+          # binaries that died with a NullPointerException on every real run while
+          # this step stayed green. The run below builds that context, needs no
+          # network, and fails if any bundled data resource is unreachable again.
+          work="$(mktemp -d)"
+          mkdir -p "${work}/profiles"
+          "$BIN" --profiles-dir "${work}/profiles" --out "${work}/out" --no-auto-core
+
+  action-smoke:
+    name: Action Smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up GraalVM JDK 21
+        uses: graalvm/setup-graalvm@v1
+        with:
+          distribution: graalvm-community
+          java-version: '21'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Build native image (skip tests)
+        run: mvn -B -DskipTests -Pnative verify
+
+      # Run against the binary just built rather than a published release, so a
+      # regression is caught before it is tagged. The download path is covered by
+      # the release workflow's own asset names.
+      - name: Run the action
+        id: pkgs
+        uses: ./
+        with:
+          binary: target/fhir-pkg-tool
+          packages: hl7.fhir.r4.core@4.0.1
+          skip-deps: 'true'
+          cache: 'false'
+
+      - name: Verify the standard cache was populated
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Action reported out-dir: ${{ steps.pkgs.outputs.out-dir }}"
+          sd="${HOME}/.fhir/packages/hl7.fhir.r4.core#4.0.1/package/StructureDefinition-Patient.json"
+          if [ ! -s "${sd}" ]; then
+            echo "Expected ${sd} to exist" >&2
+            ls -la "${HOME}/.fhir/packages" || true
+            exit 1
+          fi
+          grep -q '"snapshot"' "${sd}"
+          echo "OK: package installed in the standard FHIR cache, snapshot present."
