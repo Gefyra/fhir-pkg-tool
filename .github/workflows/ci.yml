@@ -65,3 +65,13 @@ jobs:
             exit 1
           fi
           "$BIN" --help
+
+          # --help never constructs a FHIR worker context, which is exactly where
+          # a resource missing from the native image surfaces: v0.4.0 shipped
+          # binaries that died with a NullPointerException on every real run while
+          # this step stayed green. The run below builds that context, needs no
+          # network, and fails if any bundled data resource is unreachable again.
+          work="$(mktemp -d)"
+          mkdir -p "${work}/profiles"
+          "$BIN" --profiles-dir "${work}/profiles" --out "${work}/out" --no-auto-core
+

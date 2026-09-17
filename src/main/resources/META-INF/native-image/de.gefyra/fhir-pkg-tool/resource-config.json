@@ -2,12 +2,24 @@
   "bundles": [
     {
       "name": "Messages",
-      "locales": ["en", "de"]
+      "locales": [
+        "en",
+        "de"
+      ]
     }
   ],
   "resources": [
     {
       "pattern": "Messages(_[a-zA-Z0-9_-]+)?\\.properties"
+    },
+    {
+      "pattern": "lang\\.dat\\.txt"
+    },
+    {
+      "pattern": "languages\\.csv"
+    },
+    {
+      "pattern": "spdx\\.json"
     }
   ]
 }
