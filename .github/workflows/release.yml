@@ -20,8 +20,10 @@ jobs:
           java-version: '21'
           cache: maven
 
+      # The tag drives the version the CLI reports via --version.
       - name: Build (skip tests)
-        run: mvn -B -DskipTests package
+        shell: bash
+        run: mvn -B -DskipTests -Drevision="${GITHUB_REF_NAME#v}" package
 
       - name: Upload jar artifact
         uses: actions/upload-artifact@v7
@@ -65,7 +67,8 @@ jobs:
           cache: maven
 
       - name: Build native image (skip tests)
-        run: mvn -B -DskipTests -Pnative verify
+        shell: bash
+        run: mvn -B -DskipTests -Drevision="${GITHUB_REF_NAME#v}" -Pnative verify
 
       - name: Rename native executable
         shell: bash

@@ -20,6 +20,9 @@
     },
     {
       "pattern": "spdx\\.json"
+    },
+    {
+      "pattern": "fhir-pkg-tool-version\\.properties"
     }
   ]
 }

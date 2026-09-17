@@ -41,7 +41,7 @@ import picocli.CommandLine.Option;
 @Command(
     name = "fhir-pkg-tool",
     mixinStandardHelpOptions = true,
-    version = "1.0-SNAPSHOT",
+    versionProvider = BuildVersion.class,
     description = "Downloads FHIR NPM packages, resolves dependencies, generates StructureDefinition snapshots, and writes them as JSON files."
 )
 public class FhirPackageSnapshotTool implements Callable<Integer> {

@@ -65,6 +65,7 @@ jobs:
             exit 1
           fi
           "$BIN" --help
+          "$BIN" --version
 
           # --help never constructs a FHIR worker context, which is exactly where
           # a resource missing from the native image surfaces: v0.4.0 shipped

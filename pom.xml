@@ -6,9 +6,12 @@
 
   <groupId>de.gefyra</groupId>
   <artifactId>fhir-pkg-tool</artifactId>
-  <version>1.0-SNAPSHOT</version>
+  <!-- CI-friendly version: the release workflow passes the git tag as -Drevision=x.y.z.
+       Local and PR builds keep the placeholder below. -->
+  <version>${revision}</version>
 
   <properties>
+    <revision>0.0.0-SNAPSHOT</revision>
     <maven.compiler.source>21</maven.compiler.source>
     <maven.compiler.target>21</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -111,6 +114,25 @@
 
   <build>
     <finalName>fhir-pkg-tool</finalName>
+
+    <resources>
+      <!-- Only the version file is filtered; everything else (notably the
+           native-image configuration) is copied verbatim. -->
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>false</filtering>
+        <excludes>
+          <exclude>fhir-pkg-tool-version.properties</exclude>
+        </excludes>
+      </resource>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>true</filtering>
+        <includes>
+          <include>fhir-pkg-tool-version.properties</include>
+        </includes>
+      </resource>
+    </resources>
     <plugins>
       <!-- Shade: Fat-Jar fürs einfache Ausführen -->
       <plugin>
