@@ -202,9 +202,6 @@ knowing about it:
 - **A dependency without a pinned version is still resolved over the network.** The action installs
   what `sushi-config.yaml` names; for an entry that says `latest`, or none at all, SUSHI still asks
   the registry which version that is.
-- **Do not upload the cache directory as an artifact.** It holds the complete content of every
-  package, dependencies included, which is far larger than the generated output you actually want.
-  `outputs.out-dir` is there to point a following step at the cache, not to archive it.
 
 ### Action inputs
 
