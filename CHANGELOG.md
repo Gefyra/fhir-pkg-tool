@@ -7,6 +7,15 @@ All notable changes to this project are documented here. The format follows
 The section for a version is what the release workflow publishes as the release notes, so every
 release needs an entry here before it is tagged.
 
+## [Unreleased]
+
+### Fixed
+
+- Snapshots now inherit the IG Publisher's corrections to known defects in the core definitions
+  (`StructureDefinitionHacker`). Previously, a profile derived from a package whose snapshot this
+  tool generated could fail validation in the IG Publisher, e.g. because of the R4 example on
+  `Consent.identifier`, whose value is not a URI although its system is `urn:ietf:rfc:3986`.
+
 ## [0.5.0] - 2026-09-17
 
 ### Added

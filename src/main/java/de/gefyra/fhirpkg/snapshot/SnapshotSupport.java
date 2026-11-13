@@ -11,6 +11,7 @@ import java.util.Optional;
 import java.util.Set;
 import org.hl7.fhir.convertors.factory.VersionConvertorFactory_40_50;
 import org.hl7.fhir.convertors.factory.VersionConvertorFactory_43_50;
+import org.hl7.fhir.r5.conformance.StructureDefinitionHacker;
 import org.hl7.fhir.utilities.VersionUtilities;
 import org.hl7.fhir.utilities.npm.NpmPackage;
 
@@ -152,6 +153,12 @@ public final class SnapshotSupport {
           if (key != null && !loadedKeys.add(key)) {
             continue;
           }
+          // Apply the same corrections to known defects in the core definitions that the IG
+          // Publisher and the validator apply when they load a package (for R4, e.g. the
+          // example of Consent.identifier, whose value is not a URI although its system is
+          // urn:ietf:rfc:3986). Without them, snapshots derived from these definitions inherit
+          // the defects and fail validation in the IG that uses them.
+          new StructureDefinitionHacker(pkg.fhirVersion()).fixSD(sd);
           try {
             context.cacheResource(sd);
           } catch (org.hl7.fhir.exceptions.DefinitionException ignored) {
