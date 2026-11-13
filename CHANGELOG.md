@@ -7,7 +7,7 @@ All notable changes to this project are documented here. The format follows
 The section for a version is what the release workflow publishes as the release notes, so every
 release needs an entry here before it is tagged.
 
-## [Unreleased]
+## [0.5.1] - 2026-11-13
 
 ### Fixed
 
@@ -86,6 +86,7 @@ release needs an entry here before it is tagged.
 Initial release: download FHIR NPM packages, resolve dependencies recursively and generate
 StructureDefinition snapshots, with jar and native binaries for Linux, macOS and Windows.
 
+[0.5.1]: https://github.com/Gefyra/fhir-pkg-tool/releases/tag/v0.5.1
 [0.5.0]: https://github.com/Gefyra/fhir-pkg-tool/releases/tag/v0.5.0
 [0.4.0]: https://github.com/Gefyra/fhir-pkg-tool/releases/tag/v0.4.0
 [0.3.0]: https://github.com/Gefyra/fhir-pkg-tool/releases/tag/v0.3.0
